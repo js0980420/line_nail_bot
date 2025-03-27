@@ -1,1 +1,1 @@
-# line_nail_bot
+# LINE 美甲預約機器人 
