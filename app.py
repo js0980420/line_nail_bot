@@ -1,234 +1,352 @@
 from flask import Flask, request, abort
-from linebot import LineBotApi, WebhookHandler
-from linebot.exceptions import InvalidSignatureError
-from linebot.models import (
-    MessageEvent, TextMessage, TextSendMessage,
-    TemplateSendMessage, ButtonsTemplate, DatetimePickerTemplateAction,
-    PostbackEvent, PostbackTemplateAction
+from linebot.v3 import WebhookHandler
+from linebot.v3.exceptions import InvalidSignatureError
+from linebot.v3.messaging import (
+    Configuration,
+    ApiClient,
+    MessagingApi,
+    ReplyMessageRequest,
+    TextMessage,
+    TemplateMessage,
+    ButtonsTemplate,
+    DatetimePickerAction,
+    PostbackAction, # 需要處理 Postback 事件
+    QuickReply,
+    QuickReplyItem,
+    MessageAction
+)
+from linebot.v3.webhooks import (
+    MessageEvent,
+    TextMessageContent,
+    PostbackEvent # 需要處理 Postback 事件
 )
 import os
-import json
-from datetime import datetime, timedelta
+import datetime # 用於處理日期時間
 
 app = Flask(__name__)
 
-# 從環境變數取得設定
-channel_secret = os.environ.get('LINE_CHANNEL_SECRET', '您的 Channel Secret')
-channel_access_token = os.environ.get('LINE_CHANNEL_ACCESS_TOKEN', '您的 Channel Access Token')
+# 從環境變數取得你的 Channel Access Token 和 Channel Secret
+configuration = Configuration(access_token=os.environ['LINE_CHANNEL_ACCESS_TOKEN'])
+handler = WebhookHandler(os.environ['LINE_CHANNEL_SECRET'])
 
-line_bot_api = LineBotApi(channel_access_token)
-handler = WebhookHandler(channel_secret)
-
-# 儲存預約資訊 (實際應用建議使用資料庫)
-bookings = {}
-
-# 服務項目
-services = {
-    "臉部護理": ["基礎護理", "深層清潔", "抗衰老護理", "亮白護理"],
-    "美甲服務": ["基本美甲", "凝膠美甲", "卸甲服務"],
-    "美髮服務": ["剪髮", "染髮", "燙髮", "護髮"]
-}
-
-# 營業時間
-business_hours = {
-    "start": 10,  # 上午 10 點
-    "end": 20,    # 晚上 8 點
-    "interval": 60 # 每個時段間隔(分鐘)
-}
+# --- 狀態管理 (簡易範例，建議用資料庫) ---
+# 使用字典來儲存每個用戶的預約狀態
+# 格式: user_states[user_id] = {'step': 'ask_datetime', 'data': {}}
+user_states = {}
+# --- 美甲師行程 (極簡範例，建議用資料庫或 Google Calendar API) ---
+# 假設 '2023-12-25T14:00' 這個時段已被預約
+busy_slots = {'2023-12-25T14:00'}
 
 @app.route("/callback", methods=['POST'])
 def callback():
-    # 取得 X-Line-Signature header 值
     signature = request.headers['X-Line-Signature']
-
-    # 取得請求內容
     body = request.get_data(as_text=True)
     app.logger.info("Request body: " + body)
-
-    # 處理 webhook
     try:
         handler.handle(body, signature)
     except InvalidSignatureError:
+        print("Invalid signature. Please check your channel access token/secret.")
         abort(400)
-
     return 'OK'
 
-@handler.add(MessageEvent, message=TextMessage)
-def handle_message(event):
-    text = event.message.text
+# --- 處理文字訊息 ---
+@handler.add(MessageEvent, message=TextMessageContent)
+def handle_text_message(event):
     user_id = event.source.user_id
+    text = event.message.text.strip().lower() # 轉小寫並去除前後空白方便比對
+    api_client = ApiClient(configuration)
+    line_bot_api = MessagingApi(api_client)
 
-    if text == "預約服務":
-        # 顯示服務類別選單
-        service_categories = list(services.keys())
-        buttons_template = ButtonsTemplate(
-            title='美容服務預約',
-            text='請選擇服務類別',
-            actions=[
-                PostbackTemplateAction(
-                    label=category,
-                    data=f"category_{category}"
-                ) for category in service_categories
-            ]
-        )
-        template_message = TemplateSendMessage(
-            alt_text='服務類別選擇',
-            template=buttons_template
-        )
-        line_bot_api.reply_message(event.reply_token, template_message)
-    
-    elif text == "查詢預約":
-        # 查詢用戶預約
-        if user_id in bookings:
-            booking_info = bookings[user_id]
-            message = f"您的預約資訊:\n服務: {booking_info['service']}\n日期: {booking_info['date']}\n時間: {booking_info['time']}"
-            line_bot_api.reply_message(
-                event.reply_token,
-                TextSendMessage(text=message)
-            )
-        else:
-            line_bot_api.reply_message(
-                event.reply_token,
-                TextSendMessage(text="您目前沒有預約。")
-            )
-    
-    elif text == "取消預約":
-        # 取消用戶預約
-        if user_id in bookings:
-            del bookings[user_id]
-            line_bot_api.reply_message(
-                event.reply_token,
-                TextSendMessage(text="您的預約已取消。")
-            )
-        else:
-            line_bot_api.reply_message(
-                event.reply_token,
-                TextSendMessage(text="您目前沒有預約。")
-            )
-    
+    # 檢查用戶是否正在預約流程中
+    current_state = user_states.get(user_id)
+
+    if current_state:
+        # --- 處理預約流程中的回覆 ---
+        step = current_state['step']
+
+        if step == 'ask_service':
+            if text in ['手部', '足部']:
+                current_state['data']['service'] = text
+                current_state['step'] = 'ask_removal'
+                line_bot_api.reply_message(
+                    ReplyMessageRequest(
+                        reply_token=event.reply_token,
+                        messages=[
+                            TextMessage(
+                                text='好的，請問需要卸甲嗎？',
+                                quick_reply=QuickReply(
+                                    items=[
+                                        QuickReplyItem(action=MessageAction(label='是', text='是')),
+                                        QuickReplyItem(action=MessageAction(label='否', text='否')),
+                                    ]
+                                )
+                            )
+                        ]
+                    )
+                )
+            else:
+                # 提示用戶選擇有效選項
+                line_bot_api.reply_message(
+                    ReplyMessageRequest(
+                        reply_token=event.reply_token,
+                        messages=[TextMessage(text='請選擇 手部 或 足部 喔！')]
+                    )
+                )
+
+        elif step == 'ask_removal':
+             if text == '是':
+                 current_state['data']['removal'] = True
+                 current_state['step'] = 'ask_removal_count'
+                 line_bot_api.reply_message(
+                     ReplyMessageRequest(
+                         reply_token=event.reply_token,
+                         messages=[TextMessage(text='請問需要卸幾隻呢？請輸入數字')]
+                     )
+                 )
+             elif text == '否':
+                 current_state['data']['removal'] = False
+                 current_state['step'] = 'ask_extension' # 跳到詢問延甲
+                 # ... (發送詢問延甲的 QuickReply) ...
+                 line_bot_api.reply_message(
+                    ReplyMessageRequest(
+                        reply_token=event.reply_token,
+                        messages=[
+                            TextMessage(
+                                text='好的，那請問需要延甲嗎？',
+                                quick_reply=QuickReply(
+                                    items=[
+                                        QuickReplyItem(action=MessageAction(label='是', text='是')),
+                                        QuickReplyItem(action=MessageAction(label='否', text='否')),
+                                    ]
+                                )
+                            )
+                        ]
+                    )
+                )
+             else:
+                 line_bot_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text='請回答 是 或 否 喔！')]))
+
+
+        elif step == 'ask_removal_count':
+            try:
+                count = int(text)
+                if count > 0:
+                    current_state['data']['removal_count'] = count
+                    current_state['step'] = 'ask_extension'
+                    # ... (發送詢問延甲的 QuickReply) ...
+                    line_bot_api.reply_message(
+                        ReplyMessageRequest(
+                            reply_token=event.reply_token,
+                            messages=[
+                                TextMessage(
+                                    text='好的，那請問需要延甲嗎？',
+                                    quick_reply=QuickReply(
+                                        items=[
+                                            QuickReplyItem(action=MessageAction(label='是', text='是')),
+                                            QuickReplyItem(action=MessageAction(label='否', text='否')),
+                                        ]
+                                    )
+                                )
+                            ]
+                        )
+                    )
+                else:
+                    line_bot_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text='請輸入有效的數量（大於0的數字）')]))
+            except ValueError:
+                line_bot_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text='請輸入數字喔！')]))
+
+        elif step == 'ask_extension':
+            # ... 類似 ask_removal 的邏輯 ...
+            if text == '是':
+                 current_state['data']['extension'] = True
+                 current_state['step'] = 'ask_extension_count'
+                 line_bot_api.reply_message(
+                     ReplyMessageRequest(
+                         reply_token=event.reply_token,
+                         messages=[TextMessage(text='請問需要延幾隻呢？請輸入數字')]
+                     )
+                 )
+            elif text == '否':
+                 current_state['data']['extension'] = False
+                 current_state['step'] = 'confirm' # 跳到確認步驟
+                 # ... (組合預約資訊並發送確認訊息) ...
+                 send_confirmation_message(line_bot_api, event.reply_token, user_id)
+            else:
+                 line_bot_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text='請回答 是 或 否 喔！')]))
+
+
+        elif step == 'ask_extension_count':
+             # ... 類似 ask_removal_count 的邏輯 ...
+            try:
+                count = int(text)
+                if count > 0:
+                    current_state['data']['extension_count'] = count
+                    current_state['step'] = 'confirm'
+                    # ... (組合預約資訊並發送確認訊息) ...
+                    send_confirmation_message(line_bot_api, event.reply_token, user_id)
+                else:
+                    line_bot_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text='請輸入有效的數量（大於0的數字）')]))
+            except ValueError:
+                line_bot_api.reply_message(ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text='請輸入數字喔！')]))
+
+        # ... 其他步驟的處理 ...
+
     else:
-        # 預設回覆
-        message = "您好！我是美容預約助手，可以幫您:\n1. 輸入「預約服務」開始預約\n2. 輸入「查詢預約」查看您的預約\n3. 輸入「取消預約」取消現有預約"
-        line_bot_api.reply_message(
-            event.reply_token,
-            TextSendMessage(text=message)
-        )
+        # --- 處理一般關鍵字 ---
+        if text == '預約':
+            # 進入預約流程，要求選擇日期時間
+            user_states[user_id] = {'step': 'ask_datetime', 'data': {}} # 初始化狀態
+            datetime_picker = TemplateMessage(
+                alt_text='請選擇預約日期與時間',
+                template=ButtonsTemplate(
+                    title='預約服務',
+                    text='請選擇您希望預約的日期與時間',
+                    actions=[
+                        DatetimePickerAction(
+                            label='選擇日期時間',
+                            data='action=booking_datetime', # Postback 資料
+                            mode='datetime', # 選擇日期+時間
+                            # initial='2023-12-25T10:00', # 可選：預設時間
+                            # min='2023-12-01T00:00',   # 可選：最早可選時間
+                            # max='2024-12-31T23:59'    # 可選：最晚可選時間
+                        )
+                    ]
+                )
+            )
+            line_bot_api.reply_message(
+                ReplyMessageRequest(
+                    reply_token=event.reply_token,
+                    messages=[datetime_picker]
+                )
+            )
 
+        elif text in ['ig', '作品集']:
+            line_bot_api.reply_message(
+                ReplyMessageRequest(
+                    reply_token=event.reply_token,
+                    messages=[TextMessage(text='歡迎參考我的作品集：\nhttps://www.instagram.com/j.innail/')]
+                )
+            )
+
+        elif text == '地址':
+            line_bot_api.reply_message(
+                ReplyMessageRequest(
+                    reply_token=event.reply_token,
+                    messages=[TextMessage(text='工作室地址：\n捷運｜永和頂溪站1號出口 步行約3分鐘\n(詳細地址將於預約成功後提供)')] # 可以在預約成功後再給詳細地址
+                )
+            )
+        # 可以加入其他關鍵字或預設回覆
+        # else:
+        #     line_bot_api.reply_message(
+        #         ReplyMessageRequest(
+        #             reply_token=event.reply_token,
+        #             messages=[TextMessage(text='您好！請問需要什麼服務？可以輸入「預約」、「IG」、「地址」')]
+        #         )
+        #     )
+
+# --- 處理 Postback 事件 (來自 DatetimePickerAction) ---
 @handler.add(PostbackEvent)
 def handle_postback(event):
-    data = event.postback.data
     user_id = event.source.user_id
-    
-    # 處理服務類別選擇
-    if data.startswith("category_"):
-        category = data.replace("category_", "")
-        
-        # 顯示此類別下的服務項目
-        service_items = services[category]
-        buttons_template = ButtonsTemplate(
-            title=f'{category}服務',
-            text='請選擇具體服務項目',
-            actions=[
-                PostbackTemplateAction(
-                    label=service,
-                    data=f"service_{category}_{service}"
-                ) for service in service_items
-            ]
-        )
-        template_message = TemplateSendMessage(
-            alt_text='服務項目選擇',
-            template=buttons_template
-        )
-        line_bot_api.reply_message(event.reply_token, template_message)
-    
-    # 處理服務項目選擇
-    elif data.startswith("service_"):
-        _, category, service = data.split("_", 2)
-        
-        # 儲存用戶選擇的服務
-        if user_id not in bookings:
-            bookings[user_id] = {}
-        
-        bookings[user_id]['category'] = category
-        bookings[user_id]['service'] = service
-        
-        # 提供日期選擇
-        date_picker = DatetimePickerTemplateAction(
-            label='選擇日期',
-            data='action=date_picker',
-            mode='date',
-            initial=datetime.now().strftime('%Y-%m-%d'),
-            min=datetime.now().strftime('%Y-%m-%d'),
-            max=(datetime.now() + timedelta(days=30)).strftime('%Y-%m-%d')
-        )
-        
-        buttons_template = ButtonsTemplate(
-            title='選擇預約日期',
-            text=f'您選擇了: {category} - {service}\n請選擇預約日期',
-            actions=[date_picker]
-        )
-        
-        template_message = TemplateSendMessage(
-            alt_text='日期選擇',
-            template=buttons_template
-        )
-        
-        line_bot_api.reply_message(event.reply_token, template_message)
-    
-    # 處理日期選擇
-    elif data == 'action=date_picker':
-        selected_date = event.postback.params['date']
-        
-        # 儲存選擇的日期
-        bookings[user_id]['date'] = selected_date
-        
-        # 提供時間選擇
-        available_times = []
-        for hour in range(business_hours['start'], business_hours['end']):
-            for minute in [0, 30]:  # 假設每30分鐘一個時段
-                time_str = f"{hour:02d}:{minute:02d}"
-                available_times.append(time_str)
-        
-        # 由於 LINE 按鈕模板限制，最多只能顯示 4 個按鈕
-        # 這裡簡化為只顯示部分時間段
-        display_times = available_times[:4]  # 實際應用中可能需要分頁或其他解決方案
-        
-        buttons_template = ButtonsTemplate(
-            title='選擇預約時間',
-            text=f'預約日期: {selected_date}\n請選擇時間段',
-            actions=[
-                PostbackTemplateAction(
-                    label=time_str,
-                    data=f"time_{time_str}"
-                ) for time_str in display_times
-            ]
-        )
-        
-        template_message = TemplateSendMessage(
-            alt_text='時間選擇',
-            template=buttons_template
-        )
-        
-        line_bot_api.reply_message(event.reply_token, template_message)
-    
-    # 處理時間選擇
-    elif data.startswith("time_"):
-        selected_time = data.replace("time_", "")
-        
-        # 儲存選擇的時間
-        bookings[user_id]['time'] = selected_time
-        
-        # 完成預約
-        booking_info = bookings[user_id]
-        confirmation_message = f"您的預約已確認!\n\n服務: {booking_info['category']} - {booking_info['service']}\n日期: {booking_info['date']}\n時間: {booking_info['time']}\n\n如需變更，請輸入「取消預約」後重新預約。"
-        
-        line_bot_api.reply_message(
-            event.reply_token,
-            TextSendMessage(text=confirmation_message)
-        )
+    api_client = ApiClient(configuration)
+    line_bot_api = MessagingApi(api_client)
+    postback_data = event.postback.data
 
+    # 簡單判斷是否為日期時間選擇的 Postback
+    if postback_data == 'action=booking_datetime':
+        selected_datetime_str = event.postback.params['datetime']
+        # --- 檢查時間是否已被預約 (核心邏輯) ---
+        if selected_datetime_str in busy_slots:
+            line_bot_api.reply_message(
+                ReplyMessageRequest(
+                    reply_token=event.reply_token,
+                    messages=[TextMessage(text=f"抱歉，{selected_datetime_str} 這個時段已被預約，請重新選擇。")]
+                )
+            )
+            # 可以選擇再次發送 DatetimePicker 或提示用戶重新輸入「預約」
+            # 這裡我們先不重送，讓用戶自己再觸發
+            if user_id in user_states: # 清除剛才的狀態，因為時間選擇失敗
+                del user_states[user_id]
+
+        else:
+            # 時間可以預約，進入下一步：詢問項目
+            current_state = user_states.get(user_id)
+            if current_state and current_state['step'] == 'ask_datetime':
+                current_state['data']['datetime'] = selected_datetime_str
+                current_state['step'] = 'ask_service'
+                line_bot_api.reply_message(
+                    ReplyMessageRequest(
+                        reply_token=event.reply_token,
+                        messages=[
+                            TextMessage(
+                                text=f"您選擇的時間是：{selected_datetime_str}\n請問您想預約哪個項目？",
+                                quick_reply=QuickReply(
+                                    items=[
+                                        QuickReplyItem(action=MessageAction(label='手部', text='手部')),
+                                        QuickReplyItem(action=MessageAction(label='足部', text='足部')),
+                                    ]
+                                )
+                            )
+                        ]
+                    )
+                )
+            else:
+                 # 如果狀態不對，可能用戶操作太快或有誤，給個提示
+                 line_bot_api.reply_message(
+                    ReplyMessageRequest(
+                        reply_token=event.reply_token,
+                        messages=[TextMessage(text="發生錯誤，請重新輸入「預約」開始流程。")]
+                    )
+                 )
+                 if user_id in user_states:
+                     del user_states[user_id] # 清除錯誤狀態
+
+
+# --- 發送最終確認訊息並儲存預約 (範例) ---
+def send_confirmation_message(line_bot_api, reply_token, user_id):
+    state = user_states.get(user_id)
+    if not state or state['step'] != 'confirm':
+        # 狀態錯誤
+        return
+
+    data = state['data']
+    # 組合訊息字串
+    summary = f"好的，已為您登記預約：\n\n" \
+              f"日期時間：{data.get('datetime', '未選擇')}\n" \
+              f"項目：{data.get('service', '未選擇')}\n" \
+              f"卸甲：{'是 (' + str(data.get('removal_count', '')) + '隻)' if data.get('removal') else '否'}\n" \
+              f"延甲：{'是 (' + str(data.get('extension_count', '')) + '隻)' if data.get('extension') else '否'}\n\n" \
+              f"後續將傳送詳細地址與注意事項給您，謝謝！"
+
+    # --- 儲存預約紀錄 (重要！) ---
+    # 在這裡你需要將 data 中的資訊存到你的資料庫或 Google Calendar
+    # 同時，將這個時段加入 busy_slots (如果是用簡易範例)
+    booked_time = data.get('datetime')
+    if booked_time:
+        busy_slots.add(booked_time)
+        print(f"--- Booking Saved ---")
+        print(f"User ID: {user_id}")
+        print(f"Data: {data}")
+        print(f"Busy Slots Now: {busy_slots}")
+        print(f"---------------------")
+
+
+    line_bot_api.reply_message(
+        ReplyMessageRequest(
+            reply_token=reply_token,
+            messages=[TextMessage(text=summary)]
+        )
+    )
+    # 清除用戶狀態，完成預約流程
+    del user_states[user_id]
+
+
+# --- 主程式入口 ---
 if __name__ == "__main__":
-    channel_secret = '3d4224a4cb32b140610545e6d155cc0d'
-    channel_access_token = 'YCffcEj/7aUw33XPEtfVMuKf1l5i5ztIHLibGTy2zGuyNgLf1RXJCqA8dVhbMp8Yxbwsr1CP6EfJID8htKS/Q3io/WSfp/gtDcaRfDT/TNErwymfiIdGWdLROcBkTfRN7hXFqHVrDQ+WgkkMGFWc3AdB04t89/1O/w1cDnyilFU='
+    # 確保你有設定環境變數 PORT，Render 會用到
     port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port)
+    # 注意：debug=True 不應在生產環境(Render)中使用，部署時應設為 False
+    # Render 會使用 Gunicorn 等 WSGI 伺服器來跑，不需要 app.run() 的 debug 模式
+    # app.run(host='0.0.0.0', port=port, debug=False)
+    # 對於 Render，通常不需要寫 app.run()，Gunicorn 會直接找 app 物件
+    pass # 在 Render 上通常由 Gunicorn 啟動，這裡保留空白或移除 app.run
