@@ -514,6 +514,16 @@ def handle_postback(event):
             # 顯示可用的美甲師選擇
             datetime_str = f"{selected_date} {selected_time}"
             
+            # 檢查日期是否為3月29日或3月30日
+            is_busy_date = False
+            if selected_date in ["2025-03-29", "2025-03-30"]:
+                is_busy_date = True
+                line_bot_api.reply_message(
+                    event.reply_token,
+                    TextSendMessage(text=f"❌ 很抱歉，{selected_date} 這一天所有美甲師都有行程，請選擇其他日期預約。")
+                )
+                return
+            
             # 檢查哪些美甲師在該時間可用
             available_manicurists = []
             for manicurist_id, manicurist in manicurists.items():
@@ -535,8 +545,32 @@ def handle_postback(event):
         elif data.startswith("select_manicurist_"):
             try:
                 parts = data.split("_")
+                logger.info(f"美甲師選擇資料拆分: {parts}")
+                
                 manicurist_id = parts[2]  # 獲取美甲師ID
-                date_time = parts[3] if len(parts) > 3 else ""  # 獲取日期時間信息
+                logger.info(f"選擇的美甲師ID: {manicurist_id}")
+                
+                # 檢查美甲師ID是否有效
+                if manicurist_id not in manicurists:
+                    logger.error(f"無效的美甲師ID: {manicurist_id}")
+                    line_bot_api.reply_message(
+                        event.reply_token,
+                        TextSendMessage(text="抱歉，您選擇的美甲師不存在，請重新開始預約流程。")
+                    )
+                    return
+                    
+                logger.info(f"美甲師信息: {manicurists[manicurist_id]}")
+                
+                date_time = '_'.join(parts[3:]) if len(parts) > 3 else ""  # 獲取日期時間信息
+                logger.info(f"選擇的日期時間: {date_time}")
+                
+                # 檢查是否為特殊日期（美甲師全天有行程）
+                if date_time and (date_time.startswith("2025-03-29") or date_time.startswith("2025-03-30")):
+                    line_bot_api.reply_message(
+                        event.reply_token,
+                        TextSendMessage(text=f"❌ 很抱歉，{date_time.split()[0]} 這一天所有美甲師都有行程，請選擇其他日期預約。")
+                    )
+                    return
                 
                 # 檢查美甲師是否仍然可用
                 if date_time and date_time in manicurists[manicurist_id]['calendar']:
@@ -637,7 +671,7 @@ def send_available_manicurists(reply_token, available_manicurist_ids, datetime_s
                     actions=[
                         PostbackTemplateAction(
                             label=f"選擇 {manicurist['name']}",
-                            data=f"select_manicurist_id_{manicurist_id}_{datetime_str}"
+                            data=f"select_manicurist_{manicurist_id}_{datetime_str}"
                         )
                     ]
                 )
