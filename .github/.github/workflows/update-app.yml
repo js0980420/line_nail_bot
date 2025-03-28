@@ -1,0 +1,30 @@
+name: Update app.py and Deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      code:
+        description: 'Paste the new app.py code here'
+        required: true
+        type: multiline
+
+jobs:
+  update-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Update app.py
+        run: |
+          echo "${{ github.event.inputs.code }}" > app.py
+
+      - name: Commit and push changes
+        run: |
+          git config --global user.name "GitHub Action"
+          git config --global user.email "action@github.com"
+          git add app.py
+          git commit -m "Update app.py with new code"
+          git push
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
