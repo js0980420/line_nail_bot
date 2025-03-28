@@ -13,6 +13,12 @@ from linebot.models import (
     LocationSendMessage
 )
 import json
+import requests
+from google.oauth2 import service_account
+from googleapiclient.discovery import build
+from google.oauth2.credentials import Credentials
+import dateutil.parser
+from datetime import datetime, timedelta
 
 app = Flask(__name__)
 
@@ -514,13 +520,12 @@ def handle_postback(event):
             # 顯示可用的美甲師選擇
             datetime_str = f"{selected_date} {selected_time}"
             
-            # 檢查日期是否為3月29日或3月30日
-            is_busy_date = False
-            if selected_date in ["2025-03-29", "2025-03-30"]:
-                is_busy_date = True
+            # 使用Google行事曆檢查是否有衝突
+            is_busy = check_google_calendar(selected_date, selected_time)
+            if is_busy:
                 line_bot_api.reply_message(
                     event.reply_token,
-                    TextSendMessage(text=f"❌ 很抱歉，{selected_date} 這一天所有美甲師都有行程，請選擇其他日期預約。")
+                    TextSendMessage(text=f"❌ 很抱歉，美甲師在 {datetime_str} 這個時間已有行程，請選擇其他時間預約。")
                 )
                 return
             
@@ -564,13 +569,17 @@ def handle_postback(event):
                 date_time = '_'.join(parts[3:]) if len(parts) > 3 else ""  # 獲取日期時間信息
                 logger.info(f"選擇的日期時間: {date_time}")
                 
-                # 檢查是否為特殊日期（美甲師全天有行程）
-                if date_time and (date_time.startswith("2025-03-29") or date_time.startswith("2025-03-30")):
-                    line_bot_api.reply_message(
-                        event.reply_token,
-                        TextSendMessage(text=f"❌ 很抱歉，{date_time.split()[0]} 這一天所有美甲師都有行程，請選擇其他日期預約。")
-                    )
-                    return
+                # 解析日期和時間
+                if date_time and " " in date_time:
+                    date_str, time_str = date_time.split(" ", 1)
+                    # 再次使用Google行事曆檢查是否有衝突
+                    is_busy = check_google_calendar(date_str, time_str)
+                    if is_busy:
+                        line_bot_api.reply_message(
+                            event.reply_token,
+                            TextSendMessage(text=f"❌ 很抱歉，美甲師在 {date_time} 這個時間已有行程，請選擇其他時間預約。")
+                        )
+                        return
                 
                 # 檢查美甲師是否仍然可用
                 if date_time and date_time in manicurists[manicurist_id]['calendar']:
@@ -764,6 +773,87 @@ def send_manicurist_detail(reply_token, manicurist_id):
         except Exception as reply_error:
             logger.error(f"無法發送錯誤回覆: {str(reply_error)}")
 
+# 檢查Google行事曆是否有衝突
+def check_google_calendar(date_str, time_str):
+    """檢查指定日期和時間是否在Google行事曆中有衝突
+    
+    Args:
+        date_str: 日期字符串，格式為'YYYY-MM-DD'
+        time_str: 時間字符串，格式為'HH:MM'
+        
+    Returns:
+        bool: 如果有衝突返回True，否則返回False
+    """
+    try:
+        # 獲取環境變數中的憑證檔案路徑
+        credential_path = os.environ.get('GOOGLE_APPLICATION_CREDENTIALS')
+        calendar_id = os.environ.get('GOOGLE_CALENDAR_ID')
+        
+        # 如果沒有設定憑證，則使用硬編碼的預設值（僅用於測試）
+        if not credential_path or not calendar_id:
+            logger.warning("Google Calendar 憑證或日曆ID未設定，使用硬編碼的測試數據")
+            # 硬編碼的特殊日期（模擬）
+            special_dates = ["2025-03-29", "2025-03-30", "2025-04-04"]
+            special_times = {
+                "2025-04-04": ["10:00", "10:30"]
+            }
+            
+            # 檢查日期是否在特殊日期列表中
+            if date_str in special_dates:
+                # 如果是全天事件（如3/29, 3/30），直接返回有衝突
+                if date_str in ["2025-03-29", "2025-03-30"]:
+                    logger.info(f"日期 {date_str} 是全天事件，有衝突")
+                    return True
+                
+                # 檢查時間是否在特殊時間列表中
+                if date_str in special_times and time_str in special_times[date_str]:
+                    logger.info(f"日期時間 {date_str} {time_str} 有衝突")
+                    return True
+            
+            # 沒有衝突
+            return False
+        
+        # 使用服務帳戶憑證
+        credentials = service_account.Credentials.from_service_account_file(
+            credential_path, 
+            scopes=['https://www.googleapis.com/auth/calendar.readonly']
+        )
+        
+        # 構建服務
+        service = build('calendar', 'v3', credentials=credentials)
+        
+        # 計算時間範圍
+        start_time = f"{date_str}T{time_str}:00+08:00"  # 台灣時區
+        end_time = datetime.fromisoformat(f"{date_str}T{time_str}:00")
+        end_time = end_time + timedelta(minutes=30)  # 預約時間為30分鐘
+        end_time = end_time.isoformat() + "+08:00"
+        
+        # 查詢行事曆
+        events_result = service.events().list(
+            calendarId=calendar_id,
+            timeMin=start_time,
+            timeMax=end_time,
+            singleEvents=True,
+            orderBy='startTime'
+        ).execute()
+        
+        events = events_result.get('items', [])
+        
+        # 如果有任何事件，則表示有衝突
+        if events:
+            event_info = []
+            for event in events:
+                start = event['start'].get('dateTime', event['start'].get('date'))
+                event_info.append(f"{event['summary']} at {start}")
+            logger.info(f"在 {date_str} {time_str} 找到衝突: {', '.join(event_info)}")
+            return True
+        
+        return False
+    except Exception as e:
+        logger.error(f"檢查Google行事曆時出錯: {str(e)}")
+        # 發生錯誤時，假設有衝突以避免誤預約
+        return True
+
 if __name__ == "__main__":
     # 預約流程說明：
     # 1. 用戶直接選擇美甲服務項目
@@ -773,9 +863,25 @@ if __name__ == "__main__":
     # 5. 用戶選擇美甲師 (最後一步)
     # 6. 確認預約
     
+    # Google行事曆集成說明：
+    # 需要設置以下環境變量：
+    # - GOOGLE_APPLICATION_CREDENTIALS: 指向服務帳戶JSON文件的路徑
+    # - GOOGLE_CALENDAR_ID: 要檢查的Google行事曆ID
+    # 如果未設置這些環境變量，系統將使用硬編碼的測試數據（2025-03-29, 2025-03-30全天忙碌，2025-04-04上午10點忙碌）
+    
     logger.info("美甲預約機器人開始啟動...")
     
     try:
+        # 檢查Google行事曆環境變量
+        google_credentials = os.environ.get('GOOGLE_APPLICATION_CREDENTIALS')
+        google_calendar_id = os.environ.get('GOOGLE_CALENDAR_ID')
+        if google_credentials and google_calendar_id:
+            logger.info("Google行事曆集成已設置")
+            logger.info(f"使用憑證文件: {google_credentials}")
+            logger.info(f"使用行事曆ID: {google_calendar_id}")
+        else:
+            logger.warning("未設置Google行事曆環境變量，將使用硬編碼的測試數據")
+        
         # 使用環境變數獲取配置
         channel_secret_value = os.environ.get('LINE_CHANNEL_SECRET')
         channel_access_token_value = os.environ.get('LINE_CHANNEL_ACCESS_TOKEN')
