@@ -11,9 +11,6 @@ import os
 import json
 import logging
 from datetime import datetime, timedelta
-from googleapiclient.discovery import build
-from google.oauth2 import service_account
-import pytz
 
 app = Flask(__name__)
 
@@ -31,157 +28,6 @@ channel_access_token = os.environ.get('LINE_CHANNEL_ACCESS_TOKEN', '您的 Chann
 logger.info(f"Channel secret: {'已設定' if channel_secret else '未設定'}")
 logger.info(f"Channel token: {'已設定' if channel_access_token else '未設定'}")
 
-# Google Calendar API 設定
-GOOGLE_CLIENT_ID = os.environ.get('GOOGLE_CLIENT_ID')
-GOOGLE_CLIENT_SECRET = os.environ.get('GOOGLE_CLIENT_SECRET')
-GOOGLE_CALENDAR_ID = os.environ.get('GOOGLE_CALENDAR_ID', 'primary')  # 預設使用主行事曆
-GOOGLE_CREDENTIALS_JSON = os.environ.get('GOOGLE_CREDENTIALS_JSON')
-
-logger.info(f"Google Client ID: {'已設定' if GOOGLE_CLIENT_ID else '未設定'}")
-logger.info(f"Google Calendar ID: {'已設定' if GOOGLE_CALENDAR_ID else '未設定'}")
-logger.info(f"Google Credentials JSON: {'已設定' if GOOGLE_CREDENTIALS_JSON else '未設定'}")
-
-# 設定時區為台灣時區
-TW_TIMEZONE = pytz.timezone('Asia/Taipei')
-
-# 初始化 Google Calendar 服務
-def get_calendar_service():
-    try:
-        # 使用服務帳戶存取Google Calendar
-        credentials_json = GOOGLE_CREDENTIALS_JSON
-        if credentials_json:
-            credentials_info = json.loads(credentials_json)
-            credentials = service_account.Credentials.from_service_account_info(
-                credentials_info,
-                scopes=['https://www.googleapis.com/auth/calendar']
-            )
-            service = build('calendar', 'v3', credentials=credentials)
-            return service
-        else:
-            print("無法獲取Google行事曆憑證，請確認環境變數設置正確")
-            return None
-    except Exception as e:
-        print(f"初始化Google Calendar失敗：{e}")
-        return None
-
-# 檢查指定時間是否有衝突
-def check_calendar_conflict(date_str, time_str):
-    service = get_calendar_service()
-    if not service:
-        return False  # 若無法連接服務，預設為無衝突
-        
-    # 將日期和時間轉換為RFC3339格式
-    start_datetime = datetime.strptime(f"{date_str} {time_str}", "%Y-%m-%d %H:%M")
-    start_datetime = TW_TIMEZONE.localize(start_datetime)
-    
-    # 假設每次預約為1小時
-    end_datetime = start_datetime + timedelta(hours=1)
-    
-    # 轉換為ISO格式
-    start_iso = start_datetime.isoformat()
-    end_iso = end_datetime.isoformat()
-    
-    try:
-        # 查詢該時段是否有事件
-        events_result = service.events().list(
-            calendarId=GOOGLE_CALENDAR_ID,
-            timeMin=start_iso,
-            timeMax=end_iso,
-            singleEvents=True,
-            orderBy='startTime'
-        ).execute()
-        
-        events = events_result.get('items', [])
-        return len(events) > 0  # 若有事件則有衝突
-    except Exception as e:
-        print(f"查詢行事曆失敗：{e}")
-        return False  # 若查詢失敗，預設為無衝突
-
-# 新增預約到Google行事曆
-def add_booking_to_calendar(booking_info):
-    service = get_calendar_service()
-    if not service:
-        return False
-        
-    try:
-        date_str = booking_info['date']
-        time_str = booking_info['time']
-        manicurist_name = booking_info.get('manicurist_name', '')
-        service_name = f"{booking_info.get('category', '')} - {booking_info.get('service', '')}"
-        
-        # 將日期和時間轉換為RFC3339格式
-        start_datetime = datetime.strptime(f"{date_str} {time_str}", "%Y-%m-%d %H:%M")
-        start_datetime = TW_TIMEZONE.localize(start_datetime)
-        
-        # 假設每次預約為1小時
-        end_datetime = start_datetime + timedelta(hours=1)
-        
-        # 建立事件
-        event = {
-            'summary': f'美甲預約：{service_name}',
-            'description': f'客戶預約美甲服務\n美甲師：{manicurist_name}\n服務項目：{service_name}',
-            'start': {
-                'dateTime': start_datetime.isoformat(),
-                'timeZone': 'Asia/Taipei',
-            },
-            'end': {
-                'dateTime': end_datetime.isoformat(),
-                'timeZone': 'Asia/Taipei',
-            },
-        }
-        
-        # 新增事件到行事曆
-        event = service.events().insert(calendarId=GOOGLE_CALENDAR_ID, body=event).execute()
-        print(f'預約已新增到行事曆: {event.get("htmlLink")}')
-        return True
-    except Exception as e:
-        print(f"新增預約到行事曆失敗：{e}")
-        return False
-
-# 從Google行事曆中刪除預約
-def remove_booking_from_calendar(booking_info):
-    service = get_calendar_service()
-    if not service:
-        return False
-        
-    try:
-        date_str = booking_info['date']
-        time_str = booking_info['time']
-        
-        # 將日期和時間轉換為RFC3339格式
-        start_datetime = datetime.strptime(f"{date_str} {time_str}", "%Y-%m-%d %H:%M")
-        start_datetime = TW_TIMEZONE.localize(start_datetime)
-        
-        # 假設每次預約為1小時
-        end_datetime = start_datetime + timedelta(hours=1)
-        
-        # 轉換為ISO格式
-        start_iso = start_datetime.isoformat()
-        end_iso = end_datetime.isoformat()
-        
-        # 查詢該時段的事件
-        events_result = service.events().list(
-            calendarId=GOOGLE_CALENDAR_ID,
-            timeMin=start_iso,
-            timeMax=end_iso,
-            singleEvents=True,
-            orderBy='startTime'
-        ).execute()
-        
-        events = events_result.get('items', [])
-        
-        # 尋找符合的預約並刪除
-        for event in events:
-            if '美甲預約' in event.get('summary', ''):
-                service.events().delete(calendarId=GOOGLE_CALENDAR_ID, eventId=event['id']).execute()
-                print(f'已從行事曆刪除預約: {event.get("summary")}')
-                return True
-                
-        return False  # 未找到相符的預約
-    except Exception as e:
-        print(f"從行事曆刪除預約失敗：{e}")
-        return False
-
 # 初始化LINE Bot API
 try:
     line_bot_api = LineBotApi(channel_access_token)
@@ -192,24 +38,6 @@ except Exception as e:
     # 設置一個空的處理器，避免系統崩潰
     line_bot_api = None
     handler = WebhookHandler("dummy_secret")
-
-# Google Calendar功能可能會失敗，但不應該影響基本功能
-def safe_check_calendar_conflict(date_str, time_str):
-    try:
-        return check_calendar_conflict(date_str, time_str)
-    except Exception as e:
-        logger.error(f"檢查行事曆衝突時發生錯誤: {e}")
-        return False  # 假設沒有衝突，允許預約繼續
-
-def safe_add_booking_to_calendar(booking_info):
-    try:
-        return add_booking_to_calendar(booking_info)
-    except Exception as e:
-        logger.error(f"添加預約到行事曆時發生錯誤: {e}")
-        return False
-
-# 儲存預約資訊 (實際應用建議使用資料庫)
-bookings = {}
 
 # 美甲師資料 (實際應用建議使用資料庫)
 manicurists = {
@@ -250,14 +78,16 @@ business_hours = {
     "interval": 60 # 每個時段間隔(分鐘)
 }
 
+# 儲存預約資訊 (實際應用建議使用資料庫)
+bookings = {}
+
 @app.route("/", methods=['GET'])
 def health_check():
     """提供簡單的健康檢查端點，確認服務器是否正常運行"""
     logger.info("收到健康檢查請求")
     status = {
         "status": "ok",
-        "line_bot": "initialized" if line_bot_api else "error",
-        "google_calendar": "available" if get_calendar_service() else "unavailable"
+        "line_bot": "initialized" if line_bot_api else "error"
     }
     return json.dumps(status)
 
@@ -416,9 +246,6 @@ def handle_message(event):
         elif text == "取消預約":
             # 取消用戶預約
             if user_id in bookings:
-                # 從Google行事曆中刪除預約
-                remove_booking_from_calendar(bookings[user_id])
-                
                 # 從美甲師行事曆中移除預約
                 if 'manicurist_id' in bookings[user_id]:
                     manicurist_id = bookings[user_id]['manicurist_id']
@@ -568,17 +395,6 @@ def handle_postback(event):
             selected_time = data.replace("time_", "")
             selected_date = bookings[user_id]['date']
             
-            # 使用安全版本的行事曆檢查
-            has_conflict = safe_check_calendar_conflict(selected_date, selected_time)
-            
-            if has_conflict:
-                # 如果有衝突，通知客戶選擇其他時間
-                line_bot_api.reply_message(
-                    event.reply_token,
-                    TextSendMessage(text=f"❌ 很抱歉，{selected_date} {selected_time} 這個時間已經有預約了。\n\n請選擇其他時間或日期預約。")
-                )
-                return
-            
             # 儲存選擇的時間
             bookings[user_id]['time'] = selected_time
             
@@ -631,9 +447,6 @@ def handle_postback(event):
             
             # 完成預約
             booking_info = bookings[user_id]
-            
-            # 將預約添加到Google行事曆
-            calendar_success = safe_add_booking_to_calendar(booking_info)
             
             confirmation_message = (
                 f"🎊 您的預約已確認! 🎊\n\n"
@@ -743,6 +556,14 @@ if __name__ == "__main__":
     # 注意：要更新美甲師照片，只需修改上面的manicurists字典中的image_url鏈接
     # 例如：修改 manicurists['1']['image_url'] = '新的照片URL'
     # 這樣可以隨時更新美甲師照片，而不需要修改程式碼其他部分
+    
+    # 預約流程說明：
+    # 1. 用戶選擇服務類別
+    # 2. 用戶選擇具體服務項目
+    # 3. 用戶選擇日期
+    # 4. 用戶選擇時間
+    # 5. 用戶選擇美甲師 (最後一步)
+    # 6. 確認預約
     
     logger.info("美甲預約機器人開始啟動...")
     
