@@ -12,7 +12,9 @@ from linebot.v3.messaging import (
     DatetimePickerAction,
     QuickReply,
     QuickReplyItem,
-    MessageAction
+    MessageAction,
+    CarouselTemplate,
+    CarouselColumn
 )
 from linebot.v3.webhooks import (
     MessageEvent,
@@ -23,11 +25,47 @@ import os
 
 app = Flask(__name__)
 
-configuration = Configuration(access_token=os.environ['LINE_CHANNEL_ACCESS_TOKEN'])
-handler = WebhookHandler(os.environ['LINE_CHANNEL_SECRET'])
+# 從環境變數中獲取 LINE Channel Access Token 和 Secret
+# 如果環境變數未設定，則使用預設值 (這應該僅用於開發/測試，絕對不要在生產環境中使用)
+channel_access_token = os.environ.get('LINE_CHANNEL_ACCESS_TOKEN')
+channel_secret = os.environ.get('LINE_CHANNEL_SECRET')
 
+if not channel_access_token:
+    print("LINE_CHANNEL_ACCESS_TOKEN is not set in environment variables.")
+    #  在生產環境中，如果遺失令牌，程式應該停止。
+    #  為了使這個範例即使在沒有設定環境變數的情況下也能運行，我們將其設置為一個空字符串。
+    channel_access_token = ""  
+if not channel_secret:
+    print("LINE_CHANNEL_SECRET is not set in environment variables.")
+    #  在生產環境中，如果遺失密鑰，程式應該停止。
+    #  為了使這個範例即使在沒有設定環境變數的情況下也能運行，我們將其設置為一個空字符串。
+    channel_secret = ""  
+
+configuration = Configuration(access_token=channel_access_token)
+handler = WebhookHandler(channel_secret)
+
+# 使用全域變數儲存使用者狀態
 user_states = {}
-busy_slots = {'2023-12-25T14:00'}
+busy_slots = set()
+
+# 美甲師資料 (可以放在資料庫或外部檔案)
+manicurists = {
+    '1': {
+        'name': '王綺綺',
+        'bio': '台灣🇹🇼TNA指甲彩繪技能職類丙級🪪日本🇯🇵pregel 1級🪪日本🇯🇵pregel 2級🪪美甲美學｜足部香氛SPA｜',
+        'image_url': 'https://your-image-url-1.com',  # 替換成實際的圖片URL
+    },
+    '2': {
+        'name': '李明美',
+        'bio': '資深美甲師，擅長各種風格設計，提供客製化服務。',
+        'image_url': 'https://your-image-url-2.com',  # 替換成實際的圖片URL
+    },
+    '3': {
+        'name': '陳曉婷',
+        'bio': '擁有多年美甲經驗，提供專業手足護理和美甲服務。',
+        'image_url': 'https://your-image-url-3.com',  # 替換成實際的圖片URL
+    },
+}
 
 @app.route("/callback", methods=['POST'])
 def callback():
@@ -48,30 +86,11 @@ def handle_text_message(event):
     api_client = ApiClient(configuration)
     line_bot_api = MessagingApi(api_client)
 
-    # 獨立關鍵字處理，無論任何狀態下都能觸發
+    # 獨立關鍵字處理
     if text == '預約':
-        user_states[user_id] = {'step': 'ask_datetime', 'data': {}}
-        datetime_picker = TemplateMessage(
-            alt_text='請選擇預約日期與時間',
-            template=ButtonsTemplate(
-                title='預約服務',
-                text='請選擇您希望預約的日期與時間',
-                actions=[
-                    DatetimePickerAction(
-                        label='選擇日期時間',
-                        data='action=booking_datetime',
-                        mode='datetime',
-                    )
-                ]
-            )
-        )
-        line_bot_api.reply_message(
-            ReplyMessageRequest(
-                reply_token=event.reply_token,
-                messages=[datetime_picker]
-            )
-        )
-        return  # 結束函數，避免進入後續邏輯
+        user_states[user_id] = {'step': 'ask_manicurist', 'data': {}}  # 先詢問美甲師
+        send_manicurist_selection(line_bot_api, event.reply_token)
+        return
 
     elif text in ['ig', '作品集']:
         line_bot_api.reply_message(
@@ -80,7 +99,7 @@ def handle_text_message(event):
                 messages=[TextMessage(text='歡迎參考我的作品集：\nhttps://www.instagram.com/j.innail/')]
             )
         )
-        return  # 結束函數
+        return
 
     elif text == '地址':
         line_bot_api.reply_message(
@@ -89,7 +108,7 @@ def handle_text_message(event):
                 messages=[TextMessage(text='工作室地址：\n捷運｜永和頂溪站1號出口 步行約3分鐘\n(詳細地址將於預約成功後提供)')]
             )
         )
-        return  # 結束函數
+        return
 
     # 檢查用戶是否在預約流程中
     current_state = user_states.get(user_id)
@@ -97,7 +116,41 @@ def handle_text_message(event):
     if current_state:
         step = current_state['step']
 
-        if step == 'ask_service':
+        if step == 'ask_manicurist':
+            if text in [m['name'].lower() for m in manicurists.values()]:
+                selected_manicurist_name = text
+                selected_manicurist_id = None
+                for key, value in manicurists.items():
+                    if value['name'].lower() == selected_manicurist_name:
+                        selected_manicurist_id = key
+                        break
+                current_state['data']['manicurist_id'] = selected_manicurist_id
+                current_state['data']['manicurist_name'] = selected_manicurist_name
+                current_state['step'] = 'ask_datetime'
+                datetime_picker = TemplateMessage(
+                    alt_text='請選擇預約日期與時間',
+                    template=ButtonsTemplate(
+                        title='預約服務',
+                        text='請選擇您希望預約的日期與時間',
+                        actions=[
+                            DatetimePickerAction(
+                                label='選擇日期時間',
+                                data='action=booking_datetime',
+                                mode='datetime',
+                            )
+                        ]
+                    )
+                )
+                line_bot_api.reply_message(
+                    ReplyMessageRequest(
+                        reply_token=event.reply_token,
+                        messages=[datetime_picker]
+                    )
+                )
+            else:
+                send_manicurist_selection(line_bot_api, event.reply_token, "請選擇有效的美甲師名稱")
+
+        elif step == 'ask_service':
             if text in ['手部', '足部']:
                 current_state['data']['service'] = text
                 current_state['step'] = 'ask_removal'
@@ -308,6 +361,7 @@ def send_confirmation_message(line_bot_api, reply_token, user_id):
 
     data = state['data']
     summary = f"好的，已為您登記預約：\n\n" \
+              f"美甲師：{data.get('manicurist_name', '未選擇')}\n" \
               f"日期時間：{data.get('datetime', '未選擇')}\n" \
               f"項目：{data.get('service', '未選擇')}\n" \
               f"卸甲：{'是 (' + str(data.get('removal_count', '')) + '隻)' if data.get('removal') else '否'}\n" \
@@ -330,3 +384,30 @@ def send_confirmation_message(line_bot_api, reply_token, user_id):
         )
     )
     del user_states[user_id]
+
+def send_manicurist_selection(line_bot_api, reply_token, message="請選擇您想要預約的美甲師："):
+    columns = []
+    for manicurist_id, manicurist in manicurists.items():
+        columns.append(
+            CarouselColumn(
+                thumbnail_image_url=manicurist['image_url'],
+                title=manicurist['name'],
+                text=manicurist['bio'][:60] + "...",  # 限制bio長度
+                actions=[
+                    MessageAction(label='選擇美甲師', text=manicurist['name']),
+                ]
+            )
+        )
+    carousel_template = CarouselTemplate(columns=columns)
+    line_bot_api.reply_message(
+        ReplyMessageRequest(
+            reply_token=reply_token,
+            messages=[
+                TextMessage(text=message),
+                TemplateMessage(alt_text='請選擇美甲師', template=carousel_template)
+            ]
+        )
+    )
+
+if __name__ == "__main__":
+    app.run()
