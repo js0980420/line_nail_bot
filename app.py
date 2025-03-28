@@ -14,11 +14,17 @@ from linebot.models import (
 )
 import json
 import requests
-from google.oauth2 import service_account
-from googleapiclient.discovery import build
-from google.oauth2.credentials import Credentials
-import dateutil.parser
-from datetime import datetime, timedelta
+
+# 嘗試導入Google行事曆所需的庫，如果不存在則捕獲異常
+GOOGLE_CALENDAR_AVAILABLE = False
+try:
+    from google.oauth2 import service_account
+    from googleapiclient.discovery import build
+    from google.oauth2.credentials import Credentials
+    import dateutil.parser
+    GOOGLE_CALENDAR_AVAILABLE = True
+except ImportError:
+    logging.warning("Google Calendar API 依賴未安裝，將使用模擬數據")
 
 app = Flask(__name__)
 
@@ -785,13 +791,9 @@ def check_google_calendar(date_str, time_str):
         bool: 如果有衝突返回True，否則返回False
     """
     try:
-        # 獲取環境變數中的憑證檔案路徑
-        credential_path = os.environ.get('GOOGLE_APPLICATION_CREDENTIALS')
-        calendar_id = os.environ.get('GOOGLE_CALENDAR_ID')
-        
-        # 如果沒有設定憑證，則使用硬編碼的預設值（僅用於測試）
-        if not credential_path or not calendar_id:
-            logger.warning("Google Calendar 憑證或日曆ID未設定，使用硬編碼的測試數據")
+        # 檢查是否可使用Google API
+        if not GOOGLE_CALENDAR_AVAILABLE:
+            logger.warning("Google Calendar API 不可用，使用硬編碼的測試數據")
             # 硬編碼的特殊日期（模擬）
             special_dates = ["2025-03-29", "2025-03-30", "2025-04-04"]
             special_times = {
@@ -812,6 +814,15 @@ def check_google_calendar(date_str, time_str):
             
             # 沒有衝突
             return False
+        
+        # 獲取環境變數中的憑證檔案路徑
+        credential_path = os.environ.get('GOOGLE_APPLICATION_CREDENTIALS')
+        calendar_id = os.environ.get('GOOGLE_CALENDAR_ID')
+        
+        # 如果沒有設定憑證，則使用硬編碼的預設值
+        if not credential_path or not calendar_id:
+            logger.warning("Google Calendar 憑證或日曆ID未設定，使用硬編碼的測試數據")
+            return date_str in ["2025-03-29", "2025-03-30"] or (date_str == "2025-04-04" and time_str in ["10:00", "10:30"])
         
         # 使用服務帳戶憑證
         credentials = service_account.Credentials.from_service_account_file(
@@ -851,8 +862,9 @@ def check_google_calendar(date_str, time_str):
         return False
     except Exception as e:
         logger.error(f"檢查Google行事曆時出錯: {str(e)}")
-        # 發生錯誤時，假設有衝突以避免誤預約
-        return True
+        # 發生錯誤時，假設沒有衝突以允許預約進行
+        # 注意：在生產環境中可能需要調整此行為以更好地處理錯誤
+        return False
 
 if __name__ == "__main__":
     # 預約流程說明：
