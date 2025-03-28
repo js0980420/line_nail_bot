@@ -17,12 +17,24 @@ import requests
 
 # 嘗試導入Google行事曆所需的庫，如果不存在則捕獲異常
 GOOGLE_CALENDAR_AVAILABLE = False
+calendar_service = None
 try:
     from google.oauth2 import service_account
     from googleapiclient.discovery import build
-    from google.oauth2.credentials import Credentials
     import dateutil.parser
-    GOOGLE_CALENDAR_AVAILABLE = True
+    
+    # 初始化Google Calendar服務
+    try:
+        credentials = service_account.Credentials.from_service_account_file(
+            os.getenv("GOOGLE_APPLICATION_CREDENTIALS"),
+            scopes=['https://www.googleapis.com/auth/calendar']
+        )
+        calendar_service = build('calendar', 'v3', credentials=credentials)
+        GOOGLE_CALENDAR_AVAILABLE = True
+        logging.info("Google Calendar API 初始化成功")
+    except Exception as e:
+        logging.warning(f"Google Calendar API 初始化失敗: {str(e)}")
+        GOOGLE_CALENDAR_AVAILABLE = False
 except ImportError:
     logging.warning("Google Calendar API 依賴未安裝，將使用模擬數據")
 
@@ -327,6 +339,13 @@ def handle_message(event):
                         datetime_str = f"{date} {time}"
                         if datetime_str in manicurists[manicurist_id]['calendar']:
                             del manicurists[manicurist_id]['calendar'][datetime_str]
+                        
+                        # 從Google日曆中刪除預約
+                        calendar_deleted = delete_event_from_calendar(date, time)
+                        if calendar_deleted:
+                            logger.info(f"已從Google日曆刪除預約: 日期={date}, 時間={time}")
+                        else:
+                            logger.warning(f"無法從Google日曆刪除預約，但本地預約已刪除: 日期={date}, 時間={time}")
                 
                 # 刪除預約記錄
                 del bookings[user_id]
@@ -611,6 +630,13 @@ def handle_postback(event):
                 # 完成預約
                 booking_info = bookings[user_id]
                 
+                # 將預約添加到Google日曆
+                calendar_result = add_event_to_calendar(user_id, booking_info)
+                if calendar_result:
+                    logger.info(f"已將預約添加到Google日曆: {booking_info}")
+                else:
+                    logger.warning(f"無法將預約添加到Google日曆，但預約仍然有效: {booking_info}")
+                
                 confirmation_message = (
                     f"🎊 您的預約已確認! 🎊\n\n"
                     f"✨ 美甲師: {booking_info['manicurist_name']} {title}\n"
@@ -864,6 +890,118 @@ def check_google_calendar(date_str, time_str):
         logger.error(f"檢查Google行事曆時出錯: {str(e)}")
         # 發生錯誤時，假設沒有衝突以允許預約進行
         # 注意：在生產環境中可能需要調整此行為以更好地處理錯誤
+        return False
+
+# 添加日曆事件
+def add_event_to_calendar(user_id, booking_data):
+    """將預約添加到Google日曆
+    
+    Args:
+        user_id: 用戶ID
+        booking_data: 預約數據，包含服務、日期、時間、美甲師等信息
+        
+    Returns:
+        bool: 是否成功添加事件
+    """
+    if not GOOGLE_CALENDAR_AVAILABLE or calendar_service is None:
+        logger.error("Google Calendar API 不可用，無法新增事件")
+        return False
+    
+    try:
+        # 解析預約時間
+        date_str = booking_data.get('date')
+        time_str = booking_data.get('time')
+        if not date_str or not time_str:
+            logger.error("預約數據中缺少日期或時間")
+            return False
+        
+        # 構建開始時間和結束時間
+        start_datetime = f"{date_str}T{time_str}:00+08:00"  # 台灣時區
+        # 預設預約時間為30分鐘
+        end_time = datetime.fromisoformat(f"{date_str}T{time_str}:00")
+        end_time = end_time + timedelta(minutes=30)
+        end_datetime = end_time.isoformat() + "+08:00"
+        
+        # 提取美甲師信息
+        manicurist_name = booking_data.get('manicurist_name', '未指定')
+        manicurist_id = booking_data.get('manicurist_id', '未指定')
+        
+        # 構建事件數據
+        event = {
+            'summary': f"{booking_data.get('service', '美甲服務')} 預約 - {manicurist_name}",
+            'location': '新北市永和區頂溪站1號出口附近',
+            'description': (
+                f"客戶 ID: {user_id}\n"
+                f"服務: {booking_data.get('service', '未指定')}\n"
+                f"美甲師: {manicurist_name} (ID: {manicurist_id})"
+            ),
+            'start': {
+                'dateTime': start_datetime,
+                'timeZone': 'Asia/Taipei',
+            },
+            'end': {
+                'dateTime': end_datetime,
+                'timeZone': 'Asia/Taipei',
+            },
+            'reminders': {
+                'useDefault': True,
+            },
+        }
+        
+        calendar_id = os.environ.get('GOOGLE_CALENDAR_ID', 'primary')
+        event = calendar_service.events().insert(calendarId=calendar_id, body=event).execute()
+        logger.info(f"成功新增日曆事件: ID={event.get('id')}, 標題={event.get('summary')}")
+        return True
+    except Exception as e:
+        logger.error(f"新增日曆事件失敗: {str(e)}")
+        return False
+
+# 從Google日曆刪除事件
+def delete_event_from_calendar(date_str, time_str):
+    """從Google日曆中刪除指定日期和時間的事件
+    
+    Args:
+        date_str: 日期字符串，格式為'YYYY-MM-DD'
+        time_str: 時間字符串，格式為'HH:MM'
+        
+    Returns:
+        bool: 是否成功刪除事件
+    """
+    if not GOOGLE_CALENDAR_AVAILABLE or calendar_service is None:
+        logger.error("Google Calendar API 不可用，無法刪除事件")
+        return False
+    
+    try:
+        # 構建時間範圍
+        start_time = f"{date_str}T{time_str}:00+08:00"  # 台灣時區
+        end_time = datetime.fromisoformat(f"{date_str}T{time_str}:00")
+        end_time = end_time + timedelta(minutes=30)  # 預約時間為30分鐘
+        end_time = end_time.isoformat() + "+08:00"
+        
+        calendar_id = os.environ.get('GOOGLE_CALENDAR_ID', 'primary')
+        
+        # 查詢該時間範圍內的事件
+        events_result = calendar_service.events().list(
+            calendarId=calendar_id,
+            timeMin=start_time,
+            timeMax=end_time,
+            singleEvents=True,
+            orderBy='startTime'
+        ).execute()
+        
+        events = events_result.get('items', [])
+        deleted_count = 0
+        
+        # 刪除找到的事件
+        for event in events:
+            event_id = event['id']
+            calendar_service.events().delete(calendarId=calendar_id, eventId=event_id).execute()
+            logger.info(f"已從Google日曆刪除事件: ID={event_id}, 標題={event.get('summary')}")
+            deleted_count += 1
+        
+        return deleted_count > 0
+    except Exception as e:
+        logger.error(f"刪除Google日曆事件失敗: {str(e)}")
         return False
 
 if __name__ == "__main__":
