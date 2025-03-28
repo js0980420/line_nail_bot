@@ -605,6 +605,27 @@ def handle_postback(event):
                             TextSendMessage(text=f"❌ 很抱歉，美甲師在 {date_time} 這個時間已有行程，請選擇其他時間預約。")
                         )
                         return
+                else:
+                    # 如果無法解析日期和時間，則從用戶預約數據中獲取
+                    date_str = bookings[user_id].get('date')
+                    time_str = bookings[user_id].get('time')
+                    if date_str and time_str:
+                        # 再次檢查是否有衝突
+                        is_busy = check_google_calendar(date_str, time_str)
+                        if is_busy:
+                            line_bot_api.reply_message(
+                                event.reply_token,
+                                TextSendMessage(text=f"❌ 很抱歉，美甲師在 {date_str} {time_str} 這個時間已有行程，請選擇其他時間預約。")
+                            )
+                            return
+                        # 更新日期時間字符串，用於後續檢查
+                        date_time = f"{date_str} {time_str}"
+                    else:
+                        line_bot_api.reply_message(
+                            event.reply_token,
+                            TextSendMessage(text="抱歉，無法確定您要預約的時間。請重新開始預約流程。")
+                        )
+                        return
                 
                 # 檢查美甲師是否仍然可用
                 if date_time and date_time in manicurists[manicurist_id]['calendar']:
@@ -817,13 +838,17 @@ def check_google_calendar(date_str, time_str):
         bool: 如果有衝突返回True，否則返回False
     """
     try:
+        # 記錄檢查的日期和時間，方便調試
+        logger.info(f"檢查日期時間是否有衝突: {date_str} {time_str}")
+        
         # 檢查是否可使用Google API
         if not GOOGLE_CALENDAR_AVAILABLE:
             logger.warning("Google Calendar API 不可用，使用硬編碼的測試數據")
             # 硬編碼的特殊日期（模擬）
-            special_dates = ["2025-03-29", "2025-03-30", "2025-04-04"]
+            special_dates = ["2025-03-29", "2025-03-30", "2025-04-04", "2025-04-05"]
             special_times = {
-                "2025-04-04": ["10:00", "10:30"]
+                "2025-04-04": ["10:00", "10:30"],
+                "2025-04-05": ["10:00", "10:30", "11:00"]
             }
             
             # 檢查日期是否在特殊日期列表中
@@ -839,6 +864,7 @@ def check_google_calendar(date_str, time_str):
                     return True
             
             # 沒有衝突
+            logger.info(f"日期時間 {date_str} {time_str} 沒有衝突")
             return False
         
         # 獲取環境變數中的憑證檔案路徑
@@ -848,7 +874,21 @@ def check_google_calendar(date_str, time_str):
         # 如果沒有設定憑證，則使用硬編碼的預設值
         if not credential_path or not calendar_id:
             logger.warning("Google Calendar 憑證或日曆ID未設定，使用硬編碼的測試數據")
-            return date_str in ["2025-03-29", "2025-03-30"] or (date_str == "2025-04-04" and time_str in ["10:00", "10:30"])
+            special_dates = ["2025-03-29", "2025-03-30", "2025-04-04", "2025-04-05"]
+            special_times = {
+                "2025-04-04": ["10:00", "10:30"],
+                "2025-04-05": ["10:00", "10:30", "11:00"]
+            }
+            
+            is_conflict = (date_str in ["2025-03-29", "2025-03-30"]) or \
+                         (date_str in special_times and time_str in special_times[date_str])
+            
+            if is_conflict:
+                logger.info(f"硬編碼數據顯示日期時間 {date_str} {time_str} 有衝突")
+            else:
+                logger.info(f"硬編碼數據顯示日期時間 {date_str} {time_str} 沒有衝突")
+                
+            return is_conflict
         
         # 使用服務帳戶憑證
         credentials = service_account.Credentials.from_service_account_file(
@@ -864,6 +904,8 @@ def check_google_calendar(date_str, time_str):
         end_time = datetime.fromisoformat(f"{date_str}T{time_str}:00")
         end_time = end_time + timedelta(minutes=30)  # 預約時間為30分鐘
         end_time = end_time.isoformat() + "+08:00"
+        
+        logger.info(f"檢查Google日曆從 {start_time} 到 {end_time}")
         
         # 查詢行事曆
         events_result = service.events().list(
@@ -885,6 +927,7 @@ def check_google_calendar(date_str, time_str):
             logger.info(f"在 {date_str} {time_str} 找到衝突: {', '.join(event_info)}")
             return True
         
+        logger.info(f"Google日曆查詢顯示日期時間 {date_str} {time_str} 沒有衝突")
         return False
     except Exception as e:
         logger.error(f"檢查Google行事曆時出錯: {str(e)}")
