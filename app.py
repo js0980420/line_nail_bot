@@ -1,16 +1,18 @@
-from flask import Flask, request, abort
-from linebot import LineBotApi, WebhookHandler
-from linebot.exceptions import InvalidSignatureError
-from linebot.models import (
-    MessageEvent, TextMessage, TextSendMessage,
-    TemplateSendMessage, ButtonsTemplate, DatetimePickerTemplateAction,
-    PostbackEvent, PostbackTemplateAction, LocationSendMessage,
-    CarouselTemplate, CarouselColumn, MessageAction, ImageSendMessage
-)
 import os
-import json
+import sys
 import logging
 from datetime import datetime, timedelta
+from flask import Flask, request, abort
+from linebot import LineBotApi, WebhookHandler
+from linebot.exceptions import InvalidSignatureError, LineBotApiError
+from linebot.models import (
+    MessageEvent, TextMessage, TextSendMessage,
+    TemplateSendMessage, ButtonsTemplate, PostbackEvent,
+    PostbackTemplateAction, DatetimePickerTemplateAction,
+    CarouselTemplate, CarouselColumn, ImageSendMessage,
+    LocationSendMessage
+)
+import json
 
 app = Flask(__name__)
 
@@ -20,6 +22,12 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+# 全局異常處理
+@app.errorhandler(Exception)
+def handle_exception(e):
+    logger.error(f"全局異常: {str(e)}")
+    return "伺服器錯誤，請稍後再試", 500
 
 # 從環境變數取得設定
 channel_secret = os.environ.get('LINE_CHANNEL_SECRET', '您的 Channel Secret')
@@ -89,6 +97,25 @@ def health_check():
     }
     return json.dumps(status)
 
+@app.route("/test", methods=['GET'])
+def test_bot():
+    """測試LINE Bot API是否正常工作"""
+    logger.info("收到測試請求")
+    try:
+        # 獲取機器人資訊以測試連接
+        bot_info = line_bot_api.get_bot_info()
+        return json.dumps({
+            "status": "ok",
+            "bot_name": bot_info.display_name,
+            "bot_user_id": bot_info.user_id
+        })
+    except Exception as e:
+        logger.error(f"測試LINE Bot API失敗: {str(e)}")
+        return json.dumps({
+            "status": "error",
+            "message": str(e)
+        }), 500
+
 @app.route("/callback", methods=['POST'])
 def callback():
     try:
@@ -97,7 +124,7 @@ def callback():
 
         # 取得請求內容
         body = request.get_data(as_text=True)
-        logger.info("Request body: " + body)
+        logger.info(f"收到webhook請求: {body[:100]}...")  # 只記錄前100個字符避免日誌過大
 
         # 處理 webhook
         try:
@@ -106,12 +133,12 @@ def callback():
             logger.error("無效的簽名")
             abort(400)
         except Exception as e:
-            logger.error(f"處理webhook時發生錯誤: {e}")
+            logger.error(f"處理webhook時發生錯誤: {str(e)}")
             # 不中斷請求，返回 OK
             
         return 'OK'
     except Exception as e:
-        logger.error(f"回呼函數發生錯誤: {e}")
+        logger.error(f"回呼函數發生錯誤: {str(e)}")
         return 'Error', 500
 
 @handler.add(MessageEvent, message=TextMessage)
@@ -131,28 +158,11 @@ def handle_message(event):
 
         # 原有功能
         if text == "預約" or text == "預約服務":
-            # 直接顯示美甲服務選項，不顯示服務類別
-            service_items = services["美甲服務"]
-            
-            # 最多只能顯示4個按鈕，因此需要分組顯示
-            buttons_template = ButtonsTemplate(
-                title='美甲服務預約',
-                text='請選擇您需要的服務',
-                actions=[
-                    PostbackTemplateAction(
-                        label=service,
-                        data=f"service_{service}"
-                    ) for service in service_items[:4]  # 最多顯示4個
-                ]
-            )
-            
-            template_message = TemplateSendMessage(
-                alt_text='美甲服務選擇',
-                template=buttons_template
-            )
-            
-            # 如果服務項目多於4個，顯示查看更多按鈕
-            if len(service_items) > 4:
+            try:
+                # 直接顯示美甲服務選項，不顯示服務類別
+                service_items = services["美甲服務"]
+                
+                # 最多只能顯示4個按鈕，因此需要分組顯示
                 buttons_template = ButtonsTemplate(
                     title='美甲服務預約',
                     text='請選擇您需要的服務',
@@ -164,8 +174,12 @@ def handle_message(event):
                     ]
                 )
                 
-                # 添加查看更多按鈕
-                additional_message = None
+                template_message = TemplateSendMessage(
+                    alt_text='美甲服務選擇',
+                    template=buttons_template
+                )
+                
+                # 如果服務項目多於4個，顯示查看更多按鈕
                 if len(service_items) > 4:
                     additional_buttons = ButtonsTemplate(
                         title='更多美甲服務',
@@ -181,17 +195,23 @@ def handle_message(event):
                         alt_text='更多美甲服務',
                         template=additional_buttons
                     )
-                
-                # 發送兩個模板消息
-                if additional_message:
+                    
+                    # 發送兩個模板消息
                     line_bot_api.reply_message(
                         event.reply_token,
                         [template_message, additional_message]
                     )
                     return
-            
-            line_bot_api.reply_message(event.reply_token, template_message)
-            return
+                
+                line_bot_api.reply_message(event.reply_token, template_message)
+                return
+            except Exception as e:
+                logger.error(f"預約服務顯示錯誤: {str(e)}")
+                line_bot_api.reply_message(
+                    event.reply_token,
+                    TextSendMessage(text="抱歉，服務選項顯示出現問題，請稍後再試。")
+                )
+                return
         
         elif text == "美甲師":
             # 顯示所有美甲師資訊
@@ -315,16 +335,21 @@ def handle_message(event):
                 event.reply_token,
                 TextSendMessage(text=message)
             )
+    except InvalidSignatureError:
+        logger.error("無效的簽名")
+        raise
+    except LineBotApiError as e:
+        logger.error(f"LINE API 錯誤: {str(e)}")
+        # 不需回覆，因為 LINE API 已經出錯
     except Exception as e:
-        logger.error(f"處理消息時發生錯誤: {e}")
+        logger.error(f"處理消息時出錯: {str(e)}")
         try:
-            # 傳送錯誤通知給用戶
             line_bot_api.reply_message(
                 event.reply_token,
-                TextSendMessage(text="很抱歉，系統發生錯誤，請稍後再試。")
+                TextSendMessage(text="抱歉，系統暫時無法處理您的請求，請稍後再試。")
             )
-        except Exception as inner_e:
-            logger.error(f"傳送錯誤通知時發生錯誤: {inner_e}")
+        except Exception as reply_error:
+            logger.error(f"無法發送錯誤回覆: {str(reply_error)}")
 
 @handler.add(PostbackEvent)
 def handle_postback(event):
@@ -335,38 +360,45 @@ def handle_postback(event):
         
         # 直接處理服務項目選擇，不需要處理服務類別選擇
         if data.startswith("service_"):
-            service = data.replace("service_", "")
-            
-            # 儲存用戶選擇的服務
-            if user_id not in bookings:
-                bookings[user_id] = {}
-            
-            # 直接設定服務類別為"美甲服務"
-            bookings[user_id]['category'] = "美甲服務"
-            bookings[user_id]['service'] = service
-            
-            # 提供日期選擇
-            date_picker = DatetimePickerTemplateAction(
-                label='選擇日期',
-                data='action=date_picker',
-                mode='date',
-                initial=datetime.now().strftime('%Y-%m-%d'),
-                min=datetime.now().strftime('%Y-%m-%d'),
-                max=(datetime.now() + timedelta(days=30)).strftime('%Y-%m-%d')
-            )
-            
-            buttons_template = ButtonsTemplate(
-                title='選擇預約日期',
-                text=f'您選擇了: 美甲服務 - {service}\n請選擇預約日期',
-                actions=[date_picker]
-            )
-            
-            template_message = TemplateSendMessage(
-                alt_text='日期選擇',
-                template=buttons_template
-            )
-            
-            line_bot_api.reply_message(event.reply_token, template_message)
+            try:
+                service = data.replace("service_", "")
+                
+                # 儲存用戶選擇的服務
+                if user_id not in bookings:
+                    bookings[user_id] = {}
+                
+                # 直接設定服務類別為"美甲服務"
+                bookings[user_id]['category'] = "美甲服務"
+                bookings[user_id]['service'] = service
+                
+                # 提供日期選擇
+                date_picker = DatetimePickerTemplateAction(
+                    label='選擇日期',
+                    data='action=date_picker',
+                    mode='date',
+                    initial=datetime.now().strftime('%Y-%m-%d'),
+                    min=datetime.now().strftime('%Y-%m-%d'),
+                    max=(datetime.now() + timedelta(days=30)).strftime('%Y-%m-%d')
+                )
+                
+                buttons_template = ButtonsTemplate(
+                    title='選擇預約日期',
+                    text=f'您選擇了: 美甲服務 - {service}\n請選擇預約日期',
+                    actions=[date_picker]
+                )
+                
+                template_message = TemplateSendMessage(
+                    alt_text='日期選擇',
+                    template=buttons_template
+                )
+                
+                line_bot_api.reply_message(event.reply_token, template_message)
+            except Exception as e:
+                logger.error(f"處理服務選擇時出錯: {str(e)}")
+                line_bot_api.reply_message(
+                    event.reply_token,
+                    TextSendMessage(text="抱歉，處理您的服務選擇時出現問題，請重新開始預約流程。")
+                )
         
         # 處理日期選擇
         elif data == 'action=date_picker':
@@ -501,48 +533,61 @@ def handle_postback(event):
         
         # 處理美甲師選擇
         elif data.startswith("select_manicurist_"):
-            parts = data.split("_")
-            manicurist_id = parts[2]  # 獲取美甲師ID
-            date_time = parts[3] if len(parts) > 3 else ""  # 獲取日期時間信息
-            
-            # 檢查美甲師是否仍然可用
-            if date_time and date_time in manicurists[manicurist_id]['calendar']:
+            try:
+                parts = data.split("_")
+                manicurist_id = parts[2]  # 獲取美甲師ID
+                date_time = parts[3] if len(parts) > 3 else ""  # 獲取日期時間信息
+                
+                # 檢查美甲師是否仍然可用
+                if date_time and date_time in manicurists[manicurist_id]['calendar']:
+                    line_bot_api.reply_message(
+                        event.reply_token,
+                        TextSendMessage(text=f"❌ 很抱歉，該美甲師剛剛被預約了這個時段，請重新選擇時間或其他美甲師。")
+                    )
+                    return
+                    
+                # 儲存用戶選擇的美甲師
+                bookings[user_id]['manicurist_id'] = manicurist_id
+                bookings[user_id]['manicurist_name'] = manicurists[manicurist_id]['name']
+                
+                # 更新美甲師行事曆
+                selected_date = bookings[user_id]['date']
+                selected_time = bookings[user_id]['time']
+                datetime_str = f"{selected_date} {selected_time}"
+                manicurists[manicurist_id]['calendar'][datetime_str] = user_id
+                
+                # 顯示職稱
+                title = "闆娘" if manicurist_id == '1' else manicurists[manicurist_id]['title']
+                
+                # 完成預約
+                booking_info = bookings[user_id]
+                
+                confirmation_message = (
+                    f"🎊 您的預約已確認! 🎊\n\n"
+                    f"✨ 美甲師: {booking_info['manicurist_name']} {title}\n"
+                    f"💅 服務: {booking_info.get('category', '')} - {booking_info['service']}\n"
+                    f"📅 日期: {booking_info['date']}\n"
+                    f"🕒 時間: {booking_info['time']}\n\n"
+                    f"如需變更，請輸入「取消預約」後重新預約。\n"
+                    f"期待為您提供專業的美甲服務！"
+                )
+                
                 line_bot_api.reply_message(
                     event.reply_token,
-                    TextSendMessage(text=f"❌ 很抱歉，該美甲師剛剛被預約了這個時段，請重新選擇時間或其他美甲師。")
+                    TextSendMessage(text=confirmation_message)
                 )
-                return
-                
-            # 儲存用戶選擇的美甲師
-            bookings[user_id]['manicurist_id'] = manicurist_id
-            bookings[user_id]['manicurist_name'] = manicurists[manicurist_id]['name']
-            
-            # 更新美甲師行事曆
-            selected_date = bookings[user_id]['date']
-            selected_time = bookings[user_id]['time']
-            datetime_str = f"{selected_date} {selected_time}"
-            manicurists[manicurist_id]['calendar'][datetime_str] = user_id
-            
-            # 顯示職稱
-            title = "闆娘" if manicurist_id == '1' else manicurists[manicurist_id]['title']
-            
-            # 完成預約
-            booking_info = bookings[user_id]
-            
-            confirmation_message = (
-                f"🎊 您的預約已確認! 🎊\n\n"
-                f"✨ 美甲師: {booking_info['manicurist_name']} {title}\n"
-                f"💅 服務: {booking_info.get('category', '')} - {booking_info['service']}\n"
-                f"📅 日期: {booking_info['date']}\n"
-                f"🕒 時間: {booking_info['time']}\n\n"
-                f"如需變更，請輸入「取消預約」後重新預約。\n"
-                f"期待為您提供專業的美甲服務！"
-            )
-            
-            line_bot_api.reply_message(
-                event.reply_token,
-                TextSendMessage(text=confirmation_message)
-            )
+            except KeyError as ke:
+                logger.error(f"處理美甲師選擇時發生 KeyError: {str(ke)}")
+                line_bot_api.reply_message(
+                    event.reply_token,
+                    TextSendMessage(text="抱歉，無法完成預約，請確保您已選擇服務、日期和時間後再選擇美甲師。")
+                )
+            except Exception as e:
+                logger.error(f"處理美甲師選擇時出錯: {str(e)}")
+                line_bot_api.reply_message(
+                    event.reply_token,
+                    TextSendMessage(text="抱歉，處理您的美甲師選擇時出現問題，請重新開始預約流程。")
+                )
         else:
             # 未知的 postback 數據
             logger.warning(f"收到未知的 postback 數據: {data}")
@@ -552,92 +597,140 @@ def handle_postback(event):
             )
 
     except Exception as e:
-        logger.error(f"處理 postback 時發生錯誤: {e}")
+        logger.error(f"處理 postback 時發生錯誤: {str(e)}")
         try:
             line_bot_api.reply_message(
                 event.reply_token,
                 TextSendMessage(text="很抱歉，處理您的選擇時發生錯誤，請重新開始。")
             )
         except Exception as inner_e:
-            logger.error(f"傳送錯誤通知時發生錯誤: {inner_e}")
+            logger.error(f"傳送錯誤通知時發生錯誤: {str(inner_e)}")
 
 # 顯示可用美甲師供客戶選擇
 def send_available_manicurists(reply_token, available_manicurist_ids, datetime_str):
-    columns = []
-    for manicurist_id in available_manicurist_ids:
-        manicurist = manicurists[manicurist_id]
-        
-        # 確保王綺綺顯示為闆娘
-        display_title = '闆娘' if manicurist_id == '1' else manicurist['title']
-        title = f"{manicurist['name']} {display_title}"
-        text = manicurist['bio'][:60] + "..." if len(manicurist['bio']) > 60 else manicurist['bio']
-        
-        columns.append(
-            CarouselColumn(
-                thumbnail_image_url=manicurist['image_url'],
-                title=title,
-                text=text,
-                actions=[
-                    PostbackTemplateAction(
-                        label=f"選擇 {manicurist['name']}",
-                        data=f"select_manicurist_id_{manicurist_id}_{datetime_str}"
-                    )
-                ]
+    try:
+        if not available_manicurist_ids:
+            line_bot_api.reply_message(
+                reply_token,
+                TextSendMessage(text=f"❌ 很抱歉，{datetime_str} 這個時間所有美甲師都有預約了。\n\n請選擇其他時間或日期預約。")
             )
+            return
+            
+        columns = []
+        for manicurist_id in available_manicurist_ids:
+            if manicurist_id not in manicurists:
+                logger.warning(f"無效的美甲師ID: {manicurist_id}")
+                continue
+                
+            manicurist = manicurists[manicurist_id]
+            
+            # 確保王綺綺顯示為闆娘
+            display_title = '闆娘' if manicurist_id == '1' else manicurist['title']
+            title = f"{manicurist['name']} {display_title}"
+            text = manicurist['bio'][:60] + "..." if len(manicurist['bio']) > 60 else manicurist['bio']
+            
+            columns.append(
+                CarouselColumn(
+                    thumbnail_image_url=manicurist['image_url'],
+                    title=title,
+                    text=text,
+                    actions=[
+                        PostbackTemplateAction(
+                            label=f"選擇 {manicurist['name']}",
+                            data=f"select_manicurist_id_{manicurist_id}_{datetime_str}"
+                        )
+                    ]
+                )
+            )
+        
+        if not columns:
+            line_bot_api.reply_message(
+                reply_token,
+                TextSendMessage(text=f"❌ 很抱歉，無法顯示美甲師資訊，請重新開始預約流程。")
+            )
+            return
+            
+        carousel_template = CarouselTemplate(columns=columns)
+        template_message = TemplateSendMessage(
+            alt_text='請選擇美甲師',
+            template=carousel_template
         )
-    
-    carousel_template = CarouselTemplate(columns=columns)
-    template_message = TemplateSendMessage(
-        alt_text='請選擇美甲師',
-        template=carousel_template
-    )
-    
-    # 修改消息，添加表情符號美化顯示
-    line_bot_api.reply_message(
-        reply_token,
-        [
-            TextSendMessage(text=f"✅ 您選擇的時間是: {datetime_str}\n\n請從以下美甲師中選擇一位為您服務："),
-            template_message
-        ]
-    )
+        
+        # 修改消息，添加表情符號美化顯示
+        line_bot_api.reply_message(
+            reply_token,
+            [
+                TextSendMessage(text=f"✅ 您選擇的時間是: {datetime_str}\n\n請從以下美甲師中選擇一位為您服務："),
+                template_message
+            ]
+        )
+    except Exception as e:
+        logger.error(f"顯示美甲師選項時出錯: {str(e)}")
+        try:
+            line_bot_api.reply_message(
+                reply_token,
+                TextSendMessage(text="抱歉，顯示美甲師選項時出現問題，請重新開始預約流程。")
+            )
+        except Exception as reply_error:
+            logger.error(f"無法發送錯誤回覆: {str(reply_error)}")
 
 # 美甲師詳細資訊顯示函數
 def send_manicurist_detail(reply_token, manicurist_id):
-    manicurist = manicurists[manicurist_id]
-    
-    # 為王綺綺闆娘添加更詳細的介紹
-    if manicurist_id == '1':  # 王綺綺是ID為1的闆娘
-        description = (
-            f"【{manicurist['name']} 闆娘】\n\n"
-            f"{manicurist['bio']}\n\n"
-            "闆娘擁有多年美甲經驗，專精於日式美甲設計和健康管理。"
-            "作為台灣國家認證的TNA指甲彩繪師和日本pregel雙認證技師，"
-            "不僅提供時尚精美的設計，更注重指甲的健康和保養。\n\n"
-            "擅長各種複雜設計和客製化服務，深受顧客喜愛。"
+    try:
+        if manicurist_id not in manicurists:
+            logger.error(f"請求顯示不存在的美甲師: {manicurist_id}")
+            line_bot_api.reply_message(
+                reply_token,
+                TextSendMessage(text="抱歉，找不到該美甲師的資訊。")
+            )
+            return
+            
+        manicurist = manicurists[manicurist_id]
+        
+        # 為王綺綺闆娘添加更詳細的介紹
+        if manicurist_id == '1':  # 王綺綺是ID為1的闆娘
+            description = (
+                f"【{manicurist['name']} 闆娘】\n\n"
+                f"{manicurist['bio']}\n\n"
+                "闆娘擁有多年美甲經驗，專精於日式美甲設計和健康管理。"
+                "作為台灣國家認證的TNA指甲彩繪師和日本pregel雙認證技師，"
+                "不僅提供時尚精美的設計，更注重指甲的健康和保養。\n\n"
+                "擅長各種複雜設計和客製化服務，深受顧客喜愛。"
+            )
+        else:
+            description = f"【{manicurist['name']} {manicurist['title']}】\n\n{manicurist['bio']}"
+        
+        # 準備圖片和文字訊息
+        image_message = ImageSendMessage(
+            original_content_url=manicurist['image_url'],
+            preview_image_url=manicurist['image_url']
         )
-    else:
-        description = f"【{manicurist['name']} {manicurist['title']}】\n\n{manicurist['bio']}"
-    
-    # 準備圖片和文字訊息
-    image_message = ImageSendMessage(
-        original_content_url=manicurist['image_url'],
-        preview_image_url=manicurist['image_url']
-    )
-    
-    # 發送訊息
-    line_bot_api.reply_message(
-        reply_token,
-        [
-            TextSendMessage(text=description),
-            image_message
-        ]
-    )
+        
+        # 發送訊息
+        line_bot_api.reply_message(
+            reply_token,
+            [
+                TextSendMessage(text=description),
+                image_message
+            ]
+        )
+    except KeyError as ke:
+        logger.error(f"美甲師資料缺少欄位: {str(ke)}")
+        line_bot_api.reply_message(
+            reply_token,
+            TextSendMessage(text="抱歉，美甲師資料不完整，無法顯示。")
+        )
+    except Exception as e:
+        logger.error(f"顯示美甲師詳細資訊時出錯: {str(e)}")
+        try:
+            line_bot_api.reply_message(
+                reply_token,
+                TextSendMessage(text="抱歉，顯示美甲師資訊時出現問題。")
+            )
+        except Exception as reply_error:
+            logger.error(f"無法發送錯誤回覆: {str(reply_error)}")
 
 if __name__ == "__main__":
-    # 注意：要更新美甲師照片，只需修改上面的manicurists字典中的image_url鏈接
-    # 例如：修改 manicurists['1']['image_url'] = '新的照片URL'
-    # 這樣可以隨時更新美甲師照片，而不需要修改程式碼其他部分
-    
     # 預約流程說明：
     # 1. 用戶直接選擇美甲服務項目
     # 2. 用戶選擇預約日期
@@ -648,25 +741,46 @@ if __name__ == "__main__":
     
     logger.info("美甲預約機器人開始啟動...")
     
-    # 使用環境變數或默認值
-    channel_secret_value = os.environ.get('LINE_CHANNEL_SECRET', '3d4224a4cb32b140610545e6d155cc0d')
-    channel_access_token_value = os.environ.get('LINE_CHANNEL_ACCESS_TOKEN', 'YCffcEj/7aUw33XPEtfVMuKf1l5i5ztIHLibGTy2zGuyNgLf1RXJCqA8dVhbMp8Yxbwsr1CP6EfJID8htKS/Q3io/WSfp/gtDcaRfDT/TNErwymfiIdGWdLROcBkTfRN7hXFqHVrDQ+WgkkMGFWc3AdB04t89/1O/w1cDnyilFU=')
-    
-    # 如果系統環境變數中設定了值，則使用環境變數，否則使用默認值
-    if os.environ.get('LINE_CHANNEL_SECRET'):
-        logger.info("使用環境變數中的 LINE_CHANNEL_SECRET")
-    else:
-        logger.info("使用默認的 LINE_CHANNEL_SECRET")
+    try:
+        # 使用環境變數獲取配置
+        channel_secret_value = os.environ.get('LINE_CHANNEL_SECRET')
+        channel_access_token_value = os.environ.get('LINE_CHANNEL_ACCESS_TOKEN')
         
-    if os.environ.get('LINE_CHANNEL_ACCESS_TOKEN'):
-        logger.info("使用環境變數中的 LINE_CHANNEL_ACCESS_TOKEN")
-    else:
-        logger.info("使用默認的 LINE_CHANNEL_ACCESS_TOKEN")
-    
-    # 重新初始化 LINE Bot API，確保使用正確的值
-    line_bot_api = LineBotApi(channel_access_token_value)
-    handler = WebhookHandler(channel_secret_value)
-    
-    port = int(os.environ.get('PORT', 5000))
-    logger.info(f"啟動服務器，監聽端口 {port}")
-    app.run(host='0.0.0.0', port=port)
+        # 檢查是否設定了必要的環境變量
+        if not channel_secret_value:
+            logger.warning("警告: 未設定 LINE_CHANNEL_SECRET 環境變量，將使用配置文件中的值")
+            channel_secret_value = '3d4224a4cb32b140610545e6d155cc0d'  # 這只是示例值，建議使用環境變量
+            
+        if not channel_access_token_value:
+            logger.warning("警告: 未設定 LINE_CHANNEL_ACCESS_TOKEN 環境變量，將使用配置文件中的值")
+            # 防止直接在源代碼中暴露完整的TOKEN，只顯示前10個字符
+            channel_access_token_value = 'YCffcEj/7aUw33XPEtfVMuKf1l5i5ztIHLibGTy2zGuyNgLf1RXJCqA8dVhbMp8Yxbwsr1CP6EfJID8htKS/Q3io/WSfp/gtDcaRfDT/TNErwymfiIdGWdLROcBkTfRN7hXFqHVrDQ+WgkkMGFWc3AdB04t89/1O/w1cDnyilFU='
+            logger.warning(f"使用默認TOKEN (前綴: {channel_access_token_value[:10]}...)")
+        else:
+            logger.info(f"使用環境變量的 LINE_CHANNEL_ACCESS_TOKEN (前綴: {channel_access_token_value[:10]}...)")
+        
+        # 重新初始化 LINE Bot API，確保使用正確的值
+        line_bot_api = LineBotApi(channel_access_token_value)
+        handler = WebhookHandler(channel_secret_value)
+        
+        # 測試LINE Bot配置
+        try:
+            bot_info = line_bot_api.get_bot_info()
+            logger.info(f"機器人成功連接: {bot_info.display_name} (ID: {bot_info.user_id})")
+        except LineBotApiError as e:
+            logger.error(f"機器人配置錯誤: {str(e)}")
+            logger.warning("請檢查您的 Channel Secret 和 Access Token 是否正確")
+        
+        # 在雲端環境下啟動
+        if os.environ.get('PORT'):
+            port = int(os.environ.get('PORT', 5000))
+            logger.info(f"在雲端環境啟動，監聽端口 {port}")
+            app.run(host='0.0.0.0', port=port)
+        else:
+            # 在本地環境下啟動
+            logger.info("在本地環境啟動，監聽端口 5000")
+            app.run(host='0.0.0.0', port=5000, debug=True)
+    except Exception as e:
+        logger.error(f"啟動過程中發生錯誤: {str(e)}")
+        logger.error("程序將退出")
+        sys.exit(1)
