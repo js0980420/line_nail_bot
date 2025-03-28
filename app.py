@@ -22,21 +22,26 @@ from linebot.v3.webhooks import (
     PostbackEvent
 )
 import os
+import logging
 
 app = Flask(__name__)
 
+# 設定日誌記錄
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
 # 從環境變數中獲取 LINE Channel Access Token 和 Secret
 # 如果環境變數未設定，則使用預設值 (這應該僅用於開發/測試，絕對不要在生產環境中使用)
-channel_access_token = TiOtAy8G48bIb/VO6ivMND0ziw2MYrl5CbC8hh1GF7QmDGvG8pjGA/s77yXKq17MCORdUgsnVm6h3++cFGyXVHaVIXX/jlXmhMm3os6K/HBszAqJbe2sMzJBezV4JEx9XFn4eKQxmNesxQ910wnoqAdB04t89/1O/w1cDnyilFU=('LINE_CHANNEL_ACCESS_TOKEN')
-channel_secret = efc8a079970c034da0dd9deacab2bd43('LINE_CHANNEL_SECRET')
+channel_access_token = os.environ.get('LINE_CHANNEL_ACCESS_TOKEN')
+channel_secret = os.environ.get('LINE_CHANNEL_SECRET')
 
 if not channel_access_token:
-    print("LINE_CHANNEL_ACCESS_TOKEN is not set in environment variables.")
+    logger.warning("LINE_CHANNEL_ACCESS_TOKEN is not set in environment variables.")
     #  在生產環境中，如果遺失令牌，程式應該停止。
     #  為了使這個範例即使在沒有設定環境變數的情況下也能運行，我們將其設置為一個空字符串。
     channel_access_token = ""  
 if not channel_secret:
-    print("LINE_CHANNEL_SECRET is not set in environment variables.")
+    logger.warning("LINE_CHANNEL_SECRET is not set in environment variables.")
     #  在生產環境中，如果遺失密鑰，程式應該停止。
     #  為了使這個範例即使在沒有設定環境變數的情況下也能運行，我們將其設置為一個空字符串。
     channel_secret = ""  
@@ -52,7 +57,7 @@ busy_slots = set()
 manicurists = {
     '1': {
         'name': '王綺綺',
-        'bio': '台灣🇹🇼TNA指甲彩繪技能職類丙級🪪日本🇯🇵pregel 1級🪪日本🇯🇵pregel 2級🪪美甲美學｜足部香氛SPA｜',
+        'bio': '台灣🇹🇼TNA指甲彩繪技能職類丙級🪪日本🇯🇵pregel 1級🪪日本🇯🇯pregel 2級🪪美甲美學｜足部香氛SPA｜',
         'image_url': 'https://your-image-url-1.com',  # 替換成實際的圖片URL
     },
     '2': {
@@ -71,7 +76,7 @@ manicurists = {
 def callback():
     signature = request.headers['X-Line-Signature']
     body = request.get_data(as_text=True)
-    app.logger.info("Request body: " + body)
+    app.logger.info("Request body: " + body)  # 使用 app.logger
     try:
         handler.handle(body, signature)
     except InvalidSignatureError:
@@ -86,13 +91,17 @@ def handle_text_message(event):
     api_client = ApiClient(configuration)
     line_bot_api = MessagingApi(api_client)
 
+    logger.info(f"User ID: {user_id}, Received message: {text}")  # 記錄收到的訊息
+
     # 獨立關鍵字處理
     if text == '預約':
+        logger.info(f"User ID: {user_id}, Action: '預約'")
         user_states[user_id] = {'step': 'ask_manicurist', 'data': {}}  # 先詢問美甲師
         send_manicurist_selection(line_bot_api, event.reply_token)
         return
 
     elif text in ['ig', '作品集']:
+        logger.info(f"User ID: {user_id}, Action: 'IG/作品集'")
         line_bot_api.reply_message(
             ReplyMessageRequest(
                 reply_token=event.reply_token,
@@ -102,6 +111,7 @@ def handle_text_message(event):
         return
 
     elif text == '地址':
+        logger.info(f"User ID: {user_id}, Action: '地址'")
         line_bot_api.reply_message(
             ReplyMessageRequest(
                 reply_token=event.reply_token,
@@ -109,14 +119,21 @@ def handle_text_message(event):
             )
         )
         return
+    
+    elif text == '美甲師':
+        logger.info(f"User ID: {user_id}, Action: '美甲師'")
+        send_manicurist_info(line_bot_api, event.reply_token)
+        return
 
     # 檢查用戶是否在預約流程中
     current_state = user_states.get(user_id)
+    logger.info(f"User ID: {user_id}, Current state: {current_state}")  # 記錄用戶當前狀態
 
     if current_state:
         step = current_state['step']
 
         if step == 'ask_manicurist':
+            logger.info(f"User ID: {user_id}, Step: 'ask_manicurist'")
             if text in [m['name'].lower() for m in manicurists.values()]:
                 selected_manicurist_name = text
                 selected_manicurist_id = None
@@ -151,6 +168,7 @@ def handle_text_message(event):
                 send_manicurist_selection(line_bot_api, event.reply_token, "請選擇有效的美甲師名稱")
 
         elif step == 'ask_service':
+            logger.info(f"User ID: {user_id}, Step: 'ask_service'")
             if text in ['手部', '足部']:
                 current_state['data']['service'] = text
                 current_state['step'] = 'ask_removal'
@@ -179,6 +197,7 @@ def handle_text_message(event):
                 )
 
         elif step == 'ask_removal':
+            logger.info(f"User ID: {user_id}, Step: 'ask_removal'")
             if text == '是':
                 current_state['data']['removal'] = True
                 current_state['step'] = 'ask_removal_count'
@@ -216,6 +235,7 @@ def handle_text_message(event):
                 )
 
         elif step == 'ask_removal_count':
+            logger.info(f"User ID: {user_id}, Step: 'ask_removal_count'")
             try:
                 count = int(text)
                 if count > 0:
@@ -253,6 +273,7 @@ def handle_text_message(event):
                 )
 
         elif step == 'ask_extension':
+            logger.info(f"User ID: {user_id}, Step: 'ask_extension'")
             if text == '是':
                 current_state['data']['extension'] = True
                 current_state['step'] = 'ask_extension_count'
@@ -275,6 +296,7 @@ def handle_text_message(event):
                 )
 
         elif step == 'ask_extension_count':
+            logger.info(f"User ID: {user_id}, Step: 'ask_extension_count'")
             try:
                 count = int(text)
                 if count > 0:
@@ -298,10 +320,11 @@ def handle_text_message(event):
 
     # 如果沒有狀態且非獨立關鍵字，提供預設回覆
     else:
+        logger.info(f"User ID: {user_id}, No state, sending default reply")
         line_bot_api.reply_message(
             ReplyMessageRequest(
                 reply_token=event.reply_token,
-                messages=[TextMessage(text='您好！請問需要什麼服務？可以輸入「預約」、「IG」、「地址」')]
+                messages=[TextMessage(text='您好！請問需要什麼服務？可以輸入「預約」、「IG」、「地址」、「美甲師」')]
             )
         )
 
@@ -311,6 +334,8 @@ def handle_postback(event):
     api_client = ApiClient(configuration)
     line_bot_api = MessagingApi(api_client)
     postback_data = event.postback.data
+
+    logger.info(f"User ID: {user_id}, Postback data: {postback_data}")  # 記錄 Postback 事件
 
     if postback_data == 'action=booking_datetime':
         selected_datetime_str = event.postback.params['datetime']
@@ -408,6 +433,14 @@ def send_manicurist_selection(line_bot_api, reply_token, message="請選擇您�
             ]
         )
     )
+
+def send_manicurist_info(line_bot_api, reply_token):
+    messages = []
+    for manicurist_id, manicurist in manicurists.items():
+        text_message = TextMessage(text=f"{manicurist['name']}\n{manicurist['bio']}")
+        image_message = ImageSendMessage(original_content_url=manicurist['image_url'], preview_image_url=manicurist['image_url'])
+        messages.extend([text_message, image_message])
+    line_bot_api.reply_message(ReplyMessageRequest(reply_token=reply_token, messages=messages))
 
 if __name__ == "__main__":
     app.run()
