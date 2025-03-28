@@ -1,1 +1,1 @@
-web: gunicorn app:app --log-file - 
+web: bash deploy_render.sh 
