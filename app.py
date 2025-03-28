@@ -4,7 +4,8 @@ from linebot.exceptions import InvalidSignatureError
 from linebot.models import (
     MessageEvent, TextMessage, TextSendMessage,
     TemplateSendMessage, ButtonsTemplate, DatetimePickerTemplateAction,
-    PostbackEvent, PostbackTemplateAction, LocationSendMessage
+    PostbackEvent, PostbackTemplateAction, LocationSendMessage,
+    CarouselTemplate, CarouselColumn, MessageAction, ImageSendMessage
 )
 import os
 import json
@@ -21,6 +22,28 @@ handler = WebhookHandler(channel_secret)
 
 # 儲存預約資訊 (實際應用建議使用資料庫)
 bookings = {}
+
+# 美甲師資料 (實際應用建議使用資料庫)
+manicurists = {
+    '1': {
+        'name': '王綺綺',
+        'title': '店長',
+        'bio': '台灣🇹🇼TNA指甲彩繪技能職類丙級🪪日本🇯🇵pregel 1級🪪日本🇯🇵pregel 2級🪪美甲美學｜足部香氛SPA｜',
+        'image_url': 'https://example.com/images/wang_qiqi.jpg',  # 替換為真實照片URL
+    },
+    '2': {
+        'name': '李明美',
+        'title': '資深美甲師',
+        'bio': '擅長各種風格設計，提供客製化服務。專精日系美甲、法式美甲、寶石裝飾。',
+        'image_url': 'https://example.com/images/li_mingmei.jpg',  # 替換為真實照片URL
+    },
+    '3': {
+        'name': '陳曉婷',
+        'title': '美甲師',
+        'bio': '擁有多年美甲經驗，提供專業手足護理和美甲服務。擅長手繪藝術及繁複設計。',
+        'image_url': 'https://example.com/images/chen_xiaoting.jpg',  # 替換為真實照片URL
+    }
+}
 
 # 服務項目
 services = {
@@ -59,31 +82,44 @@ def handle_message(event):
     user_id = event.source.user_id
 
     if text == "預約" or text == "預約服務":
-        # 顯示服務類別選單
-        service_categories = list(services.keys())
-        buttons_template = ButtonsTemplate(
-            title='美容服務預約',
-            text='請選擇服務類別',
-            actions=[
-                PostbackTemplateAction(
-                    label=category,
-                    data=f"category_{category}"
-                ) for category in service_categories
-            ]
-        )
-        template_message = TemplateSendMessage(
-            alt_text='服務類別選擇',
-            template=buttons_template
-        )
-        line_bot_api.reply_message(event.reply_token, template_message)
+        # 新版流程：先選擇美甲師
+        send_manicurist_selection(event.reply_token)
     
     elif text == "美甲師":
-        # 顯示美甲師資訊
-        message = "我們的美甲師團隊：\n\n1. 王綺綺：台灣TNA指甲彩繪技能職類丙級，日本pregel 1級和2級。專長美甲美學及足部香氛SPA。\n\n2. 李明美：資深美甲師，擅長各種風格設計，提供客製化服務。\n\n3. 陳曉婷：擁有多年美甲經驗，提供專業手足護理和美甲服務。"
-        line_bot_api.reply_message(
-            event.reply_token,
-            TextSendMessage(text=message)
-        )
+        # 顯示所有美甲師資訊
+        messages = []
+        
+        # 添加介紹文字
+        intro_message = TextSendMessage(text="以下是我們的美甲師團隊：")
+        messages.append(intro_message)
+        
+        # 為每位美甲師添加詳細資訊和照片
+        for manicurist_id, manicurist in manicurists.items():
+            if manicurist_id == '1':  # 特別介紹王綺綺闆娘
+                description = (
+                    f"【{manicurist['name']} {manicurist['title']}】\n\n"
+                    f"{manicurist['bio']}\n\n"
+                    "闆娘擁有多年美甲經驗，專精於日式美甲設計和健康管理。"
+                    "作為台灣國家認證的TNA指甲彩繪師和日本pregel雙認證技師，"
+                    "不僅提供時尚精美的設計，更注重指甲的健康和保養。\n\n"
+                    "擅長各種複雜設計和客製化服務，深受顧客喜愛。"
+                )
+            else:
+                description = f"【{manicurist['name']} {manicurist['title']}】\n\n{manicurist['bio']}"
+            
+            text_message = TextSendMessage(text=description)
+            image_message = ImageSendMessage(
+                original_content_url=manicurist['image_url'],
+                preview_image_url=manicurist['image_url']
+            )
+            
+            messages.append(text_message)
+            messages.append(image_message)
+        
+        # 添加預約提示
+        messages.append(TextSendMessage(text="若要預約，請輸入「預約」開始預約流程"))
+        
+        line_bot_api.reply_message(event.reply_token, messages)
     
     elif text == "地址":
         # 顯示地址資訊
@@ -148,8 +184,27 @@ def handle_postback(event):
     data = event.postback.data
     user_id = event.source.user_id
     
+    # 處理美甲師選擇
+    if data.startswith("select_manicurist_"):
+        manicurist_id = data.replace("select_manicurist_", "")
+        manicurist = manicurists[manicurist_id]
+        
+        # 儲存用戶選擇的美甲師
+        if user_id not in bookings:
+            bookings[user_id] = {}
+        
+        bookings[user_id]['manicurist_id'] = manicurist_id
+        bookings[user_id]['manicurist_name'] = manicurist['name']
+        
+        # 顯示美甲師詳細介紹和照片
+        send_manicurist_detail(event.reply_token, manicurist_id)
+    
+    # 重新選擇美甲師
+    elif data == "restart_selection":
+        send_manicurist_selection(event.reply_token)
+        
     # 處理服務類別選擇
-    if data.startswith("category_"):
+    elif data.startswith("category_"):
         category = data.replace("category_", "")
         
         # 顯示此類別下的服務項目
@@ -166,6 +221,28 @@ def handle_postback(event):
         )
         template_message = TemplateSendMessage(
             alt_text='服務項目選擇',
+            template=buttons_template
+        )
+        line_bot_api.reply_message(event.reply_token, template_message)
+        
+    # 服务选择后的预约流程
+    elif data.startswith("start_booking_"):
+        manicurist_id = data.replace("start_booking_", "")
+        
+        # 显示服务类别选单
+        service_categories = list(services.keys())
+        buttons_template = ButtonsTemplate(
+            title='美容服務預約',
+            text=f'已選擇美甲師: {manicurists[manicurist_id]["name"]}\n請選擇服務類別',
+            actions=[
+                PostbackTemplateAction(
+                    label=category,
+                    data=f"category_{category}"
+                ) for category in service_categories
+            ]
+        )
+        template_message = TemplateSendMessage(
+            alt_text='服務類別選擇',
             template=buttons_template
         )
         line_bot_api.reply_message(event.reply_token, template_message)
@@ -256,7 +333,100 @@ def handle_postback(event):
             TextSendMessage(text=confirmation_message)
         )
 
+# 新增美甲師選擇的函數
+def send_manicurist_selection(reply_token):
+    columns = []
+    for manicurist_id, manicurist in manicurists.items():
+        title = f"{manicurist['name']} {manicurist['title']}"
+        text = manicurist['bio'][:60] + "..." if len(manicurist['bio']) > 60 else manicurist['bio']
+        
+        columns.append(
+            CarouselColumn(
+                thumbnail_image_url=manicurist['image_url'],
+                title=title,
+                text=text,
+                actions=[
+                    PostbackTemplateAction(
+                        label=f"選擇 {manicurist['name']}",
+                        data=f"select_manicurist_{manicurist_id}"
+                    )
+                ]
+            )
+        )
+    
+    carousel_template = CarouselTemplate(columns=columns)
+    template_message = TemplateSendMessage(
+        alt_text='請選擇美甲師',
+        template=carousel_template
+    )
+    
+    line_bot_api.reply_message(
+        reply_token,
+        [
+            TextSendMessage(text="請選擇您想預約的美甲師："),
+            template_message
+        ]
+    )
+
+# 新增顯示美甲師詳細資訊的函數
+def send_manicurist_detail(reply_token, manicurist_id):
+    manicurist = manicurists[manicurist_id]
+    
+    # 為王綺綺店長添加更詳細的介紹
+    if manicurist_id == '1':  # 王綺綺是ID為1的店長
+        description = (
+            f"【{manicurist['name']} {manicurist['title']}】\n\n"
+            f"{manicurist['bio']}\n\n"
+            "王店長擁有多年美甲經驗，專精於日式美甲設計和健康管理。"
+            "作為台灣國家認證的TNA指甲彩繪師和日本pregel雙認證技師，"
+            "不僅提供時尚精美的設計，更注重指甲的健康和保養。\n\n"
+            "擅長各種複雜設計和客製化服務，深受顧客喜愛。"
+        )
+    else:
+        description = f"【{manicurist['name']} {manicurist['title']}】\n\n{manicurist['bio']}"
+    
+    # 準備圖片和文字訊息
+    image_message = ImageSendMessage(
+        original_content_url=manicurist['image_url'],
+        preview_image_url=manicurist['image_url']
+    )
+    
+    # 建立選擇按鈕
+    buttons_template = ButtonsTemplate(
+        title=f"{manicurist['name']} {manicurist['title']}",
+        text="您滿意這位美甲師嗎？",
+        actions=[
+            PostbackTemplateAction(
+                label="開始預約",
+                data=f"start_booking_{manicurist_id}"
+            ),
+            PostbackTemplateAction(
+                label="選擇其他美甲師",
+                data="restart_selection"
+            )
+        ]
+    )
+    
+    template_message = TemplateSendMessage(
+        alt_text='確認美甲師選擇',
+        template=buttons_template
+    )
+    
+    # 發送訊息
+    line_bot_api.reply_message(
+        reply_token,
+        [
+            TextSendMessage(text=description),
+            image_message,
+            template_message
+        ]
+    )
+
 if __name__ == "__main__":
+    # 注意：要更新美甲師照片，只需修改上面的manicurists字典中的image_url鏈接
+    # 例如：修改 manicurists['1']['image_url'] = '新的照片URL'
+    # 這樣可以隨時更新美甲師照片，而不需要修改程式碼其他部分
+    
     channel_secret = '3d4224a4cb32b140610545e6d155cc0d'
     channel_access_token = 'YCffcEj/7aUw33XPEtfVMuKf1l5i5ztIHLibGTy2zGuyNgLf1RXJCqA8dVhbMp8Yxbwsr1CP6EfJID8htKS/Q3io/WSfp/gtDcaRfDT/TNErwymfiIdGWdLROcBkTfRN7hXFqHVrDQ+WgkkMGFWc3AdB04t89/1O/w1cDnyilFU='
     port = int(os.environ.get('PORT', 5000))
