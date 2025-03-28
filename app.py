@@ -14,7 +14,8 @@ from linebot.v3.messaging import (
     QuickReplyItem,
     MessageAction,
     CarouselTemplate,
-    CarouselColumn
+    CarouselColumn,
+    LocationMessage # 引入 LocationMessage
 )
 from linebot.v3.webhooks import (
     MessageEvent,
@@ -115,7 +116,10 @@ def handle_text_message(event):
         line_bot_api.reply_message(
             ReplyMessageRequest(
                 reply_token=event.reply_token,
-                messages=[TextMessage(text='工作室地址：\n捷運｜永和頂溪站1號出口 步行約3分鐘\n(詳細地址將於預約成功後提供)')]
+                messages=[
+                    TextMessage(text='工作室地址：\n捷運｜永和頂溪站1號出口 步行約3分鐘\n(詳細地址將於預約成功後提供)'),
+                    LocationMessage(title='頂溪站1號出口', address='新北市永和區', latitude=25.011841, longitude=121.514514) # 加上地圖
+                ]
             )
         )
         return
