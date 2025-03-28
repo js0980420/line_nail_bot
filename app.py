@@ -27,8 +27,8 @@ app = Flask(__name__)
 
 # 從環境變數中獲取 LINE Channel Access Token 和 Secret
 # 如果環境變數未設定，則使用預設值 (這應該僅用於開發/測試，絕對不要在生產環境中使用)
-channel_access_token = os.environ.get('LINE_CHANNEL_ACCESS_TOKEN')
-channel_secret = os.environ.get('LINE_CHANNEL_SECRET')
+channel_access_token = TiOtAy8G48bIb/VO6ivMND0ziw2MYrl5CbC8hh1GF7QmDGvG8pjGA/s77yXKq17MCORdUgsnVm6h3++cFGyXVHaVIXX/jlXmhMm3os6K/HBszAqJbe2sMzJBezV4JEx9XFn4eKQxmNesxQ910wnoqAdB04t89/1O/w1cDnyilFU=('LINE_CHANNEL_ACCESS_TOKEN')
+channel_secret = efc8a079970c034da0dd9deacab2bd43('LINE_CHANNEL_SECRET')
 
 if not channel_access_token:
     print("LINE_CHANNEL_ACCESS_TOKEN is not set in environment variables.")
