@@ -15,7 +15,8 @@ from linebot.v3.messaging import (
     MessageAction,
     CarouselTemplate,
     CarouselColumn,
-    LocationMessage # 引入 LocationMessage
+    LocationMessage,  # 引入 LocationMessage
+    ImageSendMessage
 )
 from linebot.v3.webhooks import (
     MessageEvent,
@@ -40,12 +41,12 @@ if not channel_access_token:
     logger.warning("LINE_CHANNEL_ACCESS_TOKEN is not set in environment variables.")
     #  在生產環境中，如果遺失令牌，程式應該停止。
     #  為了使這個範例即使在沒有設定環境變數的情況下也能運行，我們將其設置為一個空字符串。
-    channel_access_token = ""  
+    channel_access_token = ""
 if not channel_secret:
     logger.warning("LINE_CHANNEL_SECRET is not set in environment variables.")
     #  在生產環境中，如果遺失密鑰，程式應該停止。
     #  為了使這個範例即使在沒有設定環境變數的情況下也能運行，我們將其設置為一個空字符串。
-    channel_secret = ""  
+    channel_secret = ""
 
 configuration = Configuration(access_token=channel_access_token)
 handler = WebhookHandler(channel_secret)
@@ -73,6 +74,7 @@ manicurists = {
     },
 }
 
+
 @app.route("/callback", methods=['POST'])
 def callback():
     signature = request.headers['X-Line-Signature']
@@ -84,6 +86,7 @@ def callback():
         print("Invalid signature. Please check your channel access token/secret.")
         abort(400)
     return 'OK'
+
 
 @handler.add(MessageEvent, message=TextMessageContent)
 def handle_text_message(event):
@@ -117,12 +120,12 @@ def handle_text_message(event):
             ReplyMessageRequest(
                 reply_token=event.reply_token,
                 messages=[
-                    LocationMessage(title='頂溪站1號出口', address='新北市永和區', latitude=25.011841, longitude=121.514514) # 加上地圖
+                    LocationMessage(title='頂溪站1號出口', address='新北市永和區', latitude=25.011841, longitude=121.514514)  # 加上地圖
                 ]
             )
         )
         return
-    
+
     elif text == '美甲師':
         logger.info(f"User ID: {user_id}, Action: '美甲師'")
         send_manicurist_info(line_bot_api, event.reply_token)
@@ -169,6 +172,35 @@ def handle_text_message(event):
                 )
             else:
                 send_manicurist_selection(line_bot_api, event.reply_token, "請選擇有效的美甲師名稱")
+        
+        elif step == 'ask_datetime': # 確保在 'ask_datetime' 狀態下處理日期時間選擇
+            if text == 'action=booking_datetime':  # 檢查是否為日期時間選擇的回應
+                selected_datetime_str = event.postback.params['datetime']
+                current_state['data']['datetime'] = selected_datetime_str
+                current_state['step'] = 'ask_service'
+                line_bot_api.reply_message(
+                    ReplyMessageRequest(
+                        reply_token=event.reply_token,
+                        messages=[
+                            TextMessage(
+                                text=f"您選擇的時間是：{selected_datetime_str}\n請問您想預約哪個項目？",
+                                quick_reply=QuickReply(
+                                    items=[
+                                        QuickReplyItem(action=MessageAction(label='手部', text='手部')),
+                                        QuickReplyItem(action=MessageAction(label='足部', text='足部')),
+                                    ]
+                                )
+                            )
+                        ]
+                    )
+                )
+            else:
+                line_bot_api.reply_message(
+                    ReplyMessageRequest(
+                        reply_token=event.reply_token,
+                        messages=[TextMessage(text="請選擇預約的日期和時間。")]
+                    )
+                )
 
         elif step == 'ask_service':
             logger.info(f"User ID: {user_id}, Step: 'ask_service'")
@@ -331,6 +363,7 @@ def handle_text_message(event):
             )
         )
 
+
 @handler.add(PostbackEvent)
 def handle_postback(event):
     user_id = event.source.user_id
@@ -382,6 +415,7 @@ def handle_postback(event):
                 if user_id in user_states:
                     del user_states[user_id]
 
+
 def send_confirmation_message(line_bot_api, reply_token, user_id):
     state = user_states.get(user_id)
     if not state or state['step'] != 'confirm':
@@ -413,6 +447,7 @@ def send_confirmation_message(line_bot_api, reply_token, user_id):
     )
     del user_states[user_id]
 
+
 def send_manicurist_selection(line_bot_api, reply_token, message="請選擇您想要預約的美甲師："):
     columns = []
     for manicurist_id, manicurist in manicurists.items():
@@ -437,13 +472,16 @@ def send_manicurist_selection(line_bot_api, reply_token, message="請選擇您�
         )
     )
 
+
 def send_manicurist_info(line_bot_api, reply_token):
     messages = []
     for manicurist_id, manicurist in manicurists.items():
         text_message = TextMessage(text=f"{manicurist['name']}\n{manicurist['bio']}")
-        image_message = ImageSendMessage(original_content_url=manicurist['image_url'], preview_image_url=manicurist['image_url'])
+        image_message = ImageSendMessage(original_content_url=manicurist['image_url'],
+                                       preview_image_url=manicurist['image_url'])
         messages.extend([text_message, image_message])
     line_bot_api.reply_message(ReplyMessageRequest(reply_token=reply_token, messages=messages))
+
 
 if __name__ == "__main__":
     app.run()
