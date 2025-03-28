@@ -22,16 +22,36 @@ try:
     from google.oauth2 import service_account
     from googleapiclient.discovery import build
     import dateutil.parser
+    import io
     
     # 初始化Google Calendar服務
     try:
-        credentials = service_account.Credentials.from_service_account_file(
-            os.getenv("GOOGLE_APPLICATION_CREDENTIALS"),
-            scopes=['https://www.googleapis.com/auth/calendar']
-        )
-        calendar_service = build('calendar', 'v3', credentials=credentials)
-        GOOGLE_CALENDAR_AVAILABLE = True
-        logging.info("Google Calendar API 初始化成功")
+        # 嘗試從JSON環境變量獲取憑證
+        google_creds_json = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS_JSON")
+        if google_creds_json:
+            # 從環境變量中的JSON字符串創建臨時憑證
+            service_account_info = json.loads(google_creds_json)
+            credentials = service_account.Credentials.from_service_account_info(
+                service_account_info,
+                scopes=['https://www.googleapis.com/auth/calendar']
+            )
+            calendar_service = build('calendar', 'v3', credentials=credentials)
+            GOOGLE_CALENDAR_AVAILABLE = True
+            logging.info("Google Calendar API 從環境變量JSON初始化成功")
+        else:
+            # 嘗試從文件路徑獲取憑證作為備選
+            creds_file_path = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
+            if creds_file_path:
+                credentials = service_account.Credentials.from_service_account_file(
+                    creds_file_path,
+                    scopes=['https://www.googleapis.com/auth/calendar']
+                )
+                calendar_service = build('calendar', 'v3', credentials=credentials)
+                GOOGLE_CALENDAR_AVAILABLE = True
+                logging.info("Google Calendar API 從憑證文件初始化成功")
+            else:
+                logging.warning("未找到Google Calendar憑證，無法初始化API")
+                GOOGLE_CALENDAR_AVAILABLE = False
     except Exception as e:
         logging.warning(f"Google Calendar API 初始化失敗: {str(e)}")
         GOOGLE_CALENDAR_AVAILABLE = False
@@ -828,7 +848,7 @@ def send_manicurist_detail(reply_token, manicurist_id):
 
 # 檢查Google行事曆是否有衝突
 def check_google_calendar(date_str, time_str):
-    """檢查指定日期和時間是否在Google行事曆中有衝突
+    """檢查指定日期和時間是否在Google日曆中有衝突
     
     Args:
         date_str: 日期字符串，格式為'YYYY-MM-DD'
@@ -1057,23 +1077,36 @@ if __name__ == "__main__":
     # 6. 確認預約
     
     # Google行事曆集成說明：
-    # 需要設置以下環境變量：
+    # 需要設置以下環境變量之一：
+    # - GOOGLE_APPLICATION_CREDENTIALS_JSON: Google服務帳戶憑證的JSON內容
+    # 或者
     # - GOOGLE_APPLICATION_CREDENTIALS: 指向服務帳戶JSON文件的路徑
+    # 以及：
     # - GOOGLE_CALENDAR_ID: 要檢查的Google行事曆ID
-    # 如果未設置這些環境變量，系統將使用硬編碼的測試數據（2025-03-29, 2025-03-30全天忙碌，2025-04-04上午10點忙碌）
+    # 如果未設置這些環境變量，系統將使用硬編碼的測試數據
     
     logger.info("美甲預約機器人開始啟動...")
     
     try:
         # 檢查Google行事曆環境變量
-        google_credentials = os.environ.get('GOOGLE_APPLICATION_CREDENTIALS')
+        google_credentials_json = os.environ.get('GOOGLE_APPLICATION_CREDENTIALS_JSON')
+        google_credentials_file = os.environ.get('GOOGLE_APPLICATION_CREDENTIALS')
         google_calendar_id = os.environ.get('GOOGLE_CALENDAR_ID')
-        if google_credentials and google_calendar_id:
-            logger.info("Google行事曆集成已設置")
-            logger.info(f"使用憑證文件: {google_credentials}")
+        
+        if google_credentials_json and google_calendar_id:
+            logger.info("Google行事曆集成已設置(JSON方式)")
+            logger.info(f"使用憑證JSON環境變量 (長度: {len(google_credentials_json)} 字符)")
+            logger.info(f"使用行事曆ID: {google_calendar_id}")
+        elif google_credentials_file and google_calendar_id:
+            logger.info("Google行事曆集成已設置(文件方式)")
+            logger.info(f"使用憑證文件: {google_credentials_file}")
             logger.info(f"使用行事曆ID: {google_calendar_id}")
         else:
             logger.warning("未設置Google行事曆環境變量，將使用硬編碼的測試數據")
+            if not google_calendar_id:
+                logger.warning("缺少 GOOGLE_CALENDAR_ID 環境變量")
+            if not (google_credentials_json or google_credentials_file):
+                logger.warning("缺少 GOOGLE_APPLICATION_CREDENTIALS_JSON 或 GOOGLE_APPLICATION_CREDENTIALS 環境變量")
         
         # 使用環境變數獲取配置
         channel_secret_value = os.environ.get('LINE_CHANNEL_SECRET')
@@ -1103,6 +1136,12 @@ if __name__ == "__main__":
         except LineBotApiError as e:
             logger.error(f"機器人配置錯誤: {str(e)}")
             logger.warning("請檢查您的 Channel Secret 和 Access Token 是否正確")
+        
+        # 檢查是否已設置正確的Google日曆憑證
+        if GOOGLE_CALENDAR_AVAILABLE:
+            logger.info("Google日曆API已成功初始化並可用")
+        else:
+            logger.warning("Google日曆API未初始化或不可用，預約系統將使用模擬數據進行行程衝突檢查")
         
         # 在雲端環境下啟動
         if os.environ.get('PORT'):
