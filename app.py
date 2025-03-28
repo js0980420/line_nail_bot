@@ -66,9 +66,7 @@ manicurists = {
 
 # 服務項目
 services = {
-    "臉部護理": ["基礎護理", "深層清潔", "抗衰老護理", "亮白護理"],
-    "美甲服務": ["基本美甲", "凝膠美甲", "卸甲服務"],
-    "美髮服務": ["剪髮", "染髮", "燙髮", "護髮"]
+    "美甲服務": ["基本美甲", "凝膠美甲", "卸甲服務", "手足護理", "光療美甲", "指甲彩繪"]
 }
 
 # 營業時間
@@ -133,23 +131,65 @@ def handle_message(event):
 
         # 原有功能
         if text == "預約" or text == "預約服務":
-            # 修改流程：先選擇服務類別，最後選擇美甲師
-            # 显示服务类别选单
-            service_categories = list(services.keys())
+            # 直接顯示美甲服務選項，不顯示服務類別
+            service_items = services["美甲服務"]
+            
+            # 最多只能顯示4個按鈕，因此需要分組顯示
             buttons_template = ButtonsTemplate(
                 title='美甲服務預約',
-                text='請選擇服務類別',
+                text='請選擇您需要的服務',
                 actions=[
                     PostbackTemplateAction(
-                        label=category,
-                        data=f"category_{category}"
-                    ) for category in service_categories
+                        label=service,
+                        data=f"service_{service}"
+                    ) for service in service_items[:4]  # 最多顯示4個
                 ]
             )
+            
             template_message = TemplateSendMessage(
-                alt_text='服務類別選擇',
+                alt_text='美甲服務選擇',
                 template=buttons_template
             )
+            
+            # 如果服務項目多於4個，顯示查看更多按鈕
+            if len(service_items) > 4:
+                buttons_template = ButtonsTemplate(
+                    title='美甲服務預約',
+                    text='請選擇您需要的服務',
+                    actions=[
+                        PostbackTemplateAction(
+                            label=service,
+                            data=f"service_{service}"
+                        ) for service in service_items[:4]  # 最多顯示4個
+                    ]
+                )
+                
+                # 添加查看更多按鈕
+                additional_message = None
+                if len(service_items) > 4:
+                    additional_buttons = ButtonsTemplate(
+                        title='更多美甲服務',
+                        text='其他美甲服務選項',
+                        actions=[
+                            PostbackTemplateAction(
+                                label=service,
+                                data=f"service_{service}"
+                            ) for service in service_items[4:min(8, len(service_items))]
+                        ]
+                    )
+                    additional_message = TemplateSendMessage(
+                        alt_text='更多美甲服務',
+                        template=additional_buttons
+                    )
+                
+                # 發送兩個模板消息
+                if additional_message:
+                    line_bot_api.reply_message(
+                        event.reply_token,
+                        [template_message, additional_message]
+                    )
+                    return
+            
             line_bot_api.reply_message(event.reply_token, template_message)
             return
         
@@ -293,42 +333,16 @@ def handle_postback(event):
         user_id = event.source.user_id
         logger.info(f"收到來自用戶 {user_id} 的 postback: {data}")
         
-        # 處理服務類別選擇
-        if data.startswith("category_"):
-            category = data.replace("category_", "")
-            
-            # 儲存用戶選擇的類別
-            if user_id not in bookings:
-                bookings[user_id] = {}
-            
-            bookings[user_id]['category'] = category
-            
-            # 顯示此類別下的服務項目
-            service_items = services[category]
-            buttons_template = ButtonsTemplate(
-                title=f'{category}服務',
-                text='請選擇具體服務項目',
-                actions=[
-                    PostbackTemplateAction(
-                        label=service,
-                        data=f"service_{service}"
-                    ) for service in service_items
-                ]
-            )
-            template_message = TemplateSendMessage(
-                alt_text='服務項目選擇',
-                template=buttons_template
-            )
-            line_bot_api.reply_message(event.reply_token, template_message)
-        
-        # 處理服務項目選擇
-        elif data.startswith("service_"):
+        # 直接處理服務項目選擇，不需要處理服務類別選擇
+        if data.startswith("service_"):
             service = data.replace("service_", "")
             
             # 儲存用戶選擇的服務
             if user_id not in bookings:
                 bookings[user_id] = {}
             
+            # 直接設定服務類別為"美甲服務"
+            bookings[user_id]['category'] = "美甲服務"
             bookings[user_id]['service'] = service
             
             # 提供日期選擇
@@ -343,7 +357,7 @@ def handle_postback(event):
             
             buttons_template = ButtonsTemplate(
                 title='選擇預約日期',
-                text=f'您選擇了: {bookings[user_id].get("category", "")} - {service}\n請選擇預約日期',
+                text=f'您選擇了: 美甲服務 - {service}\n請選擇預約日期',
                 actions=[date_picker]
             )
             
@@ -369,16 +383,71 @@ def handle_postback(event):
                     available_times.append(time_str)
             
             # 由於 LINE 按鈕模板限制，最多只能顯示 4 個按鈕
-            # 這裡簡化為只顯示部分時間段
-            display_times = available_times[:4]  # 實際應用中可能需要分頁或其他解決方案
+            # 這裡分為早上、下午和晚上三個時段
+            morning_times = [t for t in available_times if int(t.split(':')[0]) < 12]
+            afternoon_times = [t for t in available_times if 12 <= int(t.split(':')[0]) < 17]
+            evening_times = [t for t in available_times if int(t.split(':')[0]) >= 17]
+            
+            # 建立時段選擇
+            buttons_template = ButtonsTemplate(
+                title='選擇時段',
+                text=f'預約日期: {selected_date}\n請選擇大致時段',
+                actions=[
+                    PostbackTemplateAction(
+                        label='上午 (10:00-12:00)',
+                        data=f"timeperiod_morning_{selected_date}"
+                    ),
+                    PostbackTemplateAction(
+                        label='下午 (12:00-17:00)',
+                        data=f"timeperiod_afternoon_{selected_date}"
+                    ),
+                    PostbackTemplateAction(
+                        label='晚上 (17:00-20:00)',
+                        data=f"timeperiod_evening_{selected_date}"
+                    )
+                ]
+            )
+            
+            template_message = TemplateSendMessage(
+                alt_text='時段選擇',
+                template=buttons_template
+            )
+            
+            line_bot_api.reply_message(event.reply_token, template_message)
+        
+        # 處理時段選擇
+        elif data.startswith("timeperiod_"):
+            parts = data.split("_")
+            period = parts[1]  # morning, afternoon, evening
+            selected_date = parts[2]
+            
+            # 根據時段提供具體時間選擇
+            available_times = []
+            for hour in range(business_hours['start'], business_hours['end']):
+                for minute in [0, 30]:  # 假設每30分鐘一個時段
+                    time_str = f"{hour:02d}:{minute:02d}"
+                    available_times.append(time_str)
+            
+            if period == "morning":
+                display_times = [t for t in available_times if int(t.split(':')[0]) < 12]
+                period_text = "上午"
+            elif period == "afternoon":
+                display_times = [t for t in available_times if 12 <= int(t.split(':')[0]) < 17]
+                period_text = "下午"
+            else:  # evening
+                display_times = [t for t in available_times if int(t.split(':')[0]) >= 17]
+                period_text = "晚上"
+            
+            # 最多只顯示4個時間選項
+            display_times = display_times[:4]
             
             buttons_template = ButtonsTemplate(
-                title='選擇預約時間',
-                text=f'預約日期: {selected_date}\n請選擇時間段',
+                title=f'選擇{period_text}預約時間',
+                text=f'預約日期: {selected_date}\n請選擇具體時間',
                 actions=[
                     PostbackTemplateAction(
                         label=time_str,
-                        data=f"time_{time_str}"
+                        data=f"time_{time_str}_{selected_date}"
                     ) for time_str in display_times
                 ]
             )
@@ -392,8 +461,20 @@ def handle_postback(event):
         
         # 處理時間選擇
         elif data.startswith("time_"):
-            selected_time = data.replace("time_", "")
-            selected_date = bookings[user_id]['date']
+            parts = data.split("_")
+            selected_time = parts[1]
+            selected_date = parts[2] if len(parts) > 2 else bookings[user_id].get('date')
+            
+            # 確保日期已保存
+            if selected_date:
+                bookings[user_id]['date'] = selected_date
+            else:
+                # 如果沒有日期，返回錯誤
+                line_bot_api.reply_message(
+                    event.reply_token,
+                    TextSendMessage(text="發生錯誤，請重新選擇預約日期。")
+                )
+                return
             
             # 儲存選擇的時間
             bookings[user_id]['time'] = selected_time
@@ -421,11 +502,11 @@ def handle_postback(event):
         # 處理美甲師選擇
         elif data.startswith("select_manicurist_"):
             parts = data.split("_")
-            manicurist_id = parts[1]
-            date_time = "_".join(parts[2:])  # 確保正確獲取日期時間信息
+            manicurist_id = parts[2]  # 獲取美甲師ID
+            date_time = parts[3] if len(parts) > 3 else ""  # 獲取日期時間信息
             
             # 檢查美甲師是否仍然可用
-            if date_time in manicurists[manicurist_id]['calendar']:
+            if date_time and date_time in manicurists[manicurist_id]['calendar']:
                 line_bot_api.reply_message(
                     event.reply_token,
                     TextSendMessage(text=f"❌ 很抱歉，該美甲師剛剛被預約了這個時段，請重新選擇時間或其他美甲師。")
@@ -499,7 +580,7 @@ def send_available_manicurists(reply_token, available_manicurist_ids, datetime_s
                 actions=[
                     PostbackTemplateAction(
                         label=f"選擇 {manicurist['name']}",
-                        data=f"select_manicurist_{manicurist_id}_{datetime_str}"
+                        data=f"select_manicurist_id_{manicurist_id}_{datetime_str}"
                     )
                 ]
             )
@@ -558,10 +639,10 @@ if __name__ == "__main__":
     # 這樣可以隨時更新美甲師照片，而不需要修改程式碼其他部分
     
     # 預約流程說明：
-    # 1. 用戶選擇服務類別
-    # 2. 用戶選擇具體服務項目
-    # 3. 用戶選擇日期
-    # 4. 用戶選擇時間
+    # 1. 用戶直接選擇美甲服務項目
+    # 2. 用戶選擇預約日期
+    # 3. 用戶選擇時段（上午/下午/晚上）
+    # 4. 用戶選擇具體時間
     # 5. 用戶選擇美甲師 (最後一步)
     # 6. 確認預約
     
