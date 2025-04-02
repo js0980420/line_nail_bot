@@ -15,7 +15,7 @@ from linebot.models import (
 import json
 import requests
 
-# 配置日誌（移到代碼開頭）
+# 配置日誌
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
@@ -73,11 +73,27 @@ except ImportError:
 
 app = Flask(__name__)
 
-# 全局異常處理
+# 改進全局異常處理器
 @app.errorhandler(Exception)
 def handle_exception(e):
+    # 如果是 404 錯誤，保持 404 狀態碼
+    if isinstance(e, werkzeug.exceptions.NotFound):
+        logger.warning(f"404 Not Found: {str(e)}")
+        return "Not Found", 404
+    # 其他異常返回 500
     logger.error(f"全局異常: {str(e)}")
     return "伺服器錯誤，請稍後再試", 500
+
+# 修復健康檢查路由，支援 HEAD 和 GET 請求
+@app.route("/", methods=['GET', 'HEAD'])
+def health_check():
+    """提供簡單的健康檢查端點，確認服務器是否正常運行"""
+    logger.info("收到健康檢查請求")
+    status = {
+        "status": "ok",
+        "line_bot": "initialized" if line_bot_api else "error"
+    }
+    return json.dumps(status), 200
 
 # 從環境變數取得設定
 channel_secret = os.environ.get('LINE_CHANNEL_SECRET', '您的 Channel Secret')
@@ -195,7 +211,7 @@ def check_google_calendar(date_str, time_str):
         logger.error(f"檢查Google行事曆時出錯: {str(e)}")
         raise Exception(f"行事曆查詢失敗，請聯絡工程師修改: {str(e)}")
 
-# 處理 Postback 事件（部分代碼）
+# 處理 Postback 事件（保持不變）
 @handler.add(PostbackEvent)
 def handle_postback(event):
     try:
