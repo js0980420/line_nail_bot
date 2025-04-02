@@ -15,6 +15,13 @@ from linebot.models import (
 import json
 import requests
 
+# 配置日誌（移到代碼開頭）
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
 # 嘗試導入Google行事曆所需的庫，如果不存在則捕獲異常
 GOOGLE_CALENDAR_AVAILABLE = False
 calendar_service = None
@@ -65,13 +72,6 @@ except ImportError:
     GOOGLE_CALENDAR_AVAILABLE = False
 
 app = Flask(__name__)
-
-# 配置日誌
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
 
 # 全局異常處理
 @app.errorhandler(Exception)
