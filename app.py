@@ -157,16 +157,6 @@ business_hours = {
 # 儲存預約資訊 (實際應用建議使用資料庫)
 bookings = {}
 
-@app.route("/", methods=['GET', 'HEAD'])
-def health_check():
-    """提供簡單的健康檢查端點，確認服務器是否正常運行"""
-    logger.info("收到健康檢查請求")
-    status = {
-        "status": "ok",
-        "line_bot": "initialized" if line_bot_api else "error"
-    }
-    return json.dumps(status)
-
 @app.route("/callback", methods=['POST'], strict_slashes=False)
 def callback():
     logger.info(f"收到 /callback 請求，方法: {request.method}, 路徑: {request.path}, 頭部: {request.headers}")
