@@ -14,6 +14,7 @@ from linebot.models import (
 )
 import json
 import requests
+import werkzeug.exceptions  # 引入 werkzeug.exceptions
 
 # 配置日誌
 logging.basicConfig(
@@ -73,15 +74,19 @@ except ImportError:
 
 app = Flask(__name__)
 
-# 改進全局異常處理器
+# 處理 404 錯誤
+@app.errorhandler(404)
+def handle_404(e):
+    logger.warning(f"404 錯誤: {str(e)}，請求路徑: {request.path}")
+    return "Not Found", 404
+    
+# 全局異常處理（只處理其他異常）
 @app.errorhandler(Exception)
 def handle_exception(e):
-    # 如果是 404 錯誤，保持 404 狀態碼
+    # 避免重複處理 404 錯誤
     if isinstance(e, werkzeug.exceptions.NotFound):
-        logger.warning(f"404 Not Found: {str(e)}")
-        return "Not Found", 404
-    # 其他異常返回 500
-    logger.error(f"全局異常: {str(e)}")
+        return handle_404(e)
+    logger.error(f"全局異常: {str(e)}，請求路徑: {request.path}")
     return "伺服器錯誤，請稍後再試", 500
 
 # 修復健康檢查路由，支援 HEAD 和 GET 請求
@@ -151,6 +156,42 @@ business_hours = {
 
 # 儲存預約資訊 (實際應用建議使用資料庫)
 bookings = {}
+
+@app.route("/", methods=['GET', 'HEAD'])
+def health_check():
+    """提供簡單的健康檢查端點，確認服務器是否正常運行"""
+    logger.info("收到健康檢查請求")
+    status = {
+        "status": "ok",
+        "line_bot": "initialized" if line_bot_api else "error"
+    }
+    return json.dumps(status)
+
+@app.route("/callback", methods=['POST'], strict_slashes=False)
+def callback():
+    logger.info(f"收到 /callback 請求，方法: {request.method}, 路徑: {request.path}, 頭部: {request.headers}")
+    try:
+        # 取得 X-Line-Signature header 值
+        signature = request.headers['X-Line-Signature']
+
+        # 取得請求內容
+        body = request.get_data(as_text=True)
+        logger.info(f"收到webhook請求: {body[:100]}...")  # 只記錄前100個字符避免日誌過大
+
+        # 處理 webhook
+        try:
+            handler.handle(body, signature)
+        except InvalidSignatureError:
+            logger.error("無效的簽名")
+            abort(400)
+        except Exception as e:
+            logger.error(f"處理webhook時發生錯誤: {str(e)}")
+            # 不中斷請求，返回 OK
+            
+        return 'OK'
+    except Exception as e:
+        logger.error(f"回呼函數發生錯誤: {str(e)}")
+        return 'Error', 500
 
 # 檢查Google行事曆是否有衝突
 def check_google_calendar(date_str, time_str):
