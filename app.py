@@ -911,21 +911,6 @@ def add_event_to_calendar(user_id, booking_data):
         return True
     except Exception as e:
         logger.error(f"新增日曆事件失敗: {str(e)}")
-        
-        # 如果是權限錯誤，提供更詳細的診斷信息
-        if "403" in str(e) and "requiredAccessLevel" in str(e):
-            logger.error("這是一個權限錯誤。請確保服務帳戶擁有對日曆的寫入權限。")
-            logger.error("解決方法: 在 Google Calendar 設置中，與服務帳戶電子郵件共享日曆，並授予「編輯事件」權限。")
-            
-            # 嘗試獲取服務帳戶電子郵件
-            try:
-                if hasattr(calendar_service, '_http'):
-                    credentials = calendar_service._http.credentials
-                    if hasattr(credentials, 'service_account_email'):
-                        logger.error(f"服務帳戶電子郵件: {credentials.service_account_email}")
-            except Exception as email_error:
-                logger.error(f"無法獲取服務帳戶電子郵件: {str(email_error)}")
-        
         return False
 
 # 從Google日曆刪除事件
@@ -968,6 +953,14 @@ if __name__ == "__main__":
     logger.info("美甲預約機器人開始啟動...")
     
     try:
+        # 載入 .env 檔案中的環境變數
+        try:
+            from dotenv import load_dotenv
+            load_dotenv()
+            logger.info("已載入 .env 檔案中的環境變數")
+        except Exception as e:
+            logger.warning(f"載入 .env 檔案失敗: {str(e)}")
+        
         google_credentials_json = os.environ.get('GOOGLE_APPLICATION_CREDENTIALS_JSON')
         google_credentials_file = os.environ.get('GOOGLE_APPLICATION_CREDENTIALS')
         google_calendar_id = os.environ.get('GOOGLE_CALENDAR_ID')
