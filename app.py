@@ -546,6 +546,75 @@ def handle_postback(event):
         except Exception as inner_e:
             logger.error(f"傳送錯誤通知時發生錯誤: {str(inner_e)}")
 
+# 添加發送可用美甲師列表的函數
+def send_available_manicurists(reply_token, available_manicurists, datetime_str):
+    """
+    發送可用美甲師列表給用戶
+    
+    Args:
+        reply_token: LINE回覆令牌
+        available_manicurists: 可用美甲師ID列表
+        datetime_str: 預約日期時間字符串
+    """
+    try:
+        columns = []
+        
+        for manicurist_id in available_manicurists:
+            if manicurist_id not in manicurists:
+                continue
+                
+            manicurist = manicurists[manicurist_id]
+            
+            # 設置美甲師圖片，如果沒有則使用預設圖片
+            image_url = manicurist.get('image_url', 'https://example.com/default_manicurist.jpg')
+            
+            # 設置美甲師標題
+            title = f"{manicurist['name']} {manicurist.get('title', '')}"
+            if len(title) > 40:  # LINE限制標題長度
+                title = title[:37] + "..."
+                
+            # 設置美甲師簡介
+            text = manicurist.get('bio', '專業美甲師')
+            if len(text) > 60:  # LINE限制文字長度
+                text = text[:57] + "..."
+                
+            columns.append(
+                CarouselColumn(
+                    thumbnail_image_url=image_url,
+                    title=title,
+                    text=text,
+                    actions=[
+                        PostbackTemplateAction(
+                            label=f"選擇 {manicurist['name']}",
+                            data=f"select_manicurist_{manicurist_id}_{datetime_str}"
+                        )
+                    ]
+                )
+            )
+        
+        if not columns:
+            line_bot_api.reply_message(
+                reply_token,
+                TextSendMessage(text="抱歉，目前沒有可用的美甲師。請選擇其他時間。")
+            )
+            return
+            
+        carousel_template = CarouselTemplate(columns=columns)
+        
+        template_message = TemplateSendMessage(
+            alt_text='選擇美甲師',
+            template=carousel_template
+        )
+        
+        line_bot_api.reply_message(reply_token, template_message)
+        
+    except Exception as e:
+        logger.error(f"發送美甲師列表時出錯: {str(e)}")
+        line_bot_api.reply_message(
+            reply_token,
+            TextSendMessage(text="抱歉，獲取美甲師列表時出現錯誤，請稍後再試。")
+        )
+
 # 處理文字消息
 @handler.add(MessageEvent, message=TextMessage)
 def handle_text_message(event):
