@@ -887,12 +887,45 @@ def add_event_to_calendar(user_id, booking_data):
             },
         }
         
+        # 獲取日曆ID，如果環境變量未設置，則使用 'primary'
         calendar_id = os.environ.get('GOOGLE_CALENDAR_ID', 'primary')
+        
+        # 嘗試插入事件前先記錄詳細信息
+        logger.info(f"嘗試將事件添加到日曆 {calendar_id}，事件摘要: {event['summary']}")
+        
+        try:
+            # 首先檢查服務帳戶是否有權限訪問該日曆
+            calendar_service.calendars().get(calendarId=calendar_id).execute()
+            logger.info(f"成功訪問日曆 {calendar_id}")
+        except Exception as cal_error:
+            logger.error(f"無法訪問日曆 {calendar_id}: {str(cal_error)}")
+            
+            # 如果指定的日曆無法訪問，嘗試使用服務帳戶的主日曆
+            if calendar_id != 'primary':
+                logger.info("嘗試使用服務帳戶的主日曆作為備選")
+                calendar_id = 'primary'
+        
+        # 插入事件
         event = calendar_service.events().insert(calendarId=calendar_id, body=event).execute()
         logger.info(f"成功新增日曆事件: ID={event.get('id')}, 標題={event.get('summary')}")
         return True
     except Exception as e:
         logger.error(f"新增日曆事件失敗: {str(e)}")
+        
+        # 如果是權限錯誤，提供更詳細的診斷信息
+        if "403" in str(e) and "requiredAccessLevel" in str(e):
+            logger.error("這是一個權限錯誤。請確保服務帳戶擁有對日曆的寫入權限。")
+            logger.error("解決方法: 在 Google Calendar 設置中，與服務帳戶電子郵件共享日曆，並授予「編輯事件」權限。")
+            
+            # 嘗試獲取服務帳戶電子郵件
+            try:
+                if hasattr(calendar_service, '_http'):
+                    credentials = calendar_service._http.credentials
+                    if hasattr(credentials, 'service_account_email'):
+                        logger.error(f"服務帳戶電子郵件: {credentials.service_account_email}")
+            except Exception as email_error:
+                logger.error(f"無法獲取服務帳戶電子郵件: {str(email_error)}")
+        
         return False
 
 # 從Google日曆刪除事件
