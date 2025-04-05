@@ -546,6 +546,235 @@ def handle_postback(event):
         except Exception as inner_e:
             logger.error(f"傳送錯誤通知時發生錯誤: {str(inner_e)}")
 
+# 處理文字消息
+@handler.add(MessageEvent, message=TextMessage)
+def handle_text_message(event):
+    try:
+        text = event.message.text
+        user_id = event.source.user_id
+        logger.info(f"收到來自用戶 {user_id} 的文字消息: {text}")
+        
+        # 處理預約相關的文字命令
+        if text == "預約" or text == "我要預約" or text == "美甲預約":
+            # 顯示服務選項
+            carousel_template = CarouselTemplate(
+                columns=[
+                    CarouselColumn(
+                        thumbnail_image_url="https://example.com/nail_art1.jpg",
+                        title="基礎美甲服務",
+                        text="選擇您想要的基礎美甲服務",
+                        actions=[
+                            PostbackTemplateAction(
+                                label="基礎凝膠",
+                                data="service_基礎凝膠"
+                            ),
+                            PostbackTemplateAction(
+                                label="基礎保養",
+                                data="service_基礎保養"
+                            ),
+                            PostbackTemplateAction(
+                                label="卸甲服務",
+                                data="service_卸甲服務"
+                            )
+                        ]
+                    ),
+                    CarouselColumn(
+                        thumbnail_image_url="https://example.com/nail_art2.jpg",
+                        title="進階美甲服務",
+                        text="選擇您想要的進階美甲服務",
+                        actions=[
+                            PostbackTemplateAction(
+                                label="法式凝膠",
+                                data="service_法式凝膠"
+                            ),
+                            PostbackTemplateAction(
+                                label="漸層凝膠",
+                                data="service_漸層凝膠"
+                            ),
+                            PostbackTemplateAction(
+                                label="鑽飾設計",
+                                data="service_鑽飾設計"
+                            )
+                        ]
+                    )
+                ]
+            )
+            
+            template_message = TemplateSendMessage(
+                alt_text='美甲服務選擇',
+                template=carousel_template
+            )
+            
+            line_bot_api.reply_message(event.reply_token, template_message)
+        
+        # 處理取消預約的請求
+        elif text == "取消預約" or text == "我要取消預約":
+            if user_id in bookings:
+                booking_info = bookings[user_id]
+                if 'date' in booking_info and 'time' in booking_info:
+                    date_str = booking_info['date']
+                    time_str = booking_info['time']
+                    
+                    # 嘗試從Google日曆刪除事件
+                    if GOOGLE_CALENDAR_AVAILABLE:
+                        try:
+                            delete_result = delete_event_from_calendar(date_str, time_str)
+                            if delete_result:
+                                logger.info(f"已從Google日曆刪除預約: {date_str} {time_str}")
+                            else:
+                                logger.warning(f"無法從Google日曆刪除預約: {date_str} {time_str}")
+                        except Exception as e:
+                            logger.error(f"刪除Google日曆事件時出錯: {str(e)}")
+                    
+                    # 從美甲師的日曆中移除預約
+                    if 'manicurist_id' in booking_info:
+                        manicurist_id = booking_info['manicurist_id']
+                        datetime_str = f"{date_str} {time_str}"
+                        if manicurist_id in manicurists and datetime_str in manicurists[manicurist_id]['calendar']:
+                            del manicurists[manicurist_id]['calendar'][datetime_str]
+                    
+                    # 清除預約信息
+                    del bookings[user_id]
+                    
+                    line_bot_api.reply_message(
+                        event.reply_token,
+                        TextSendMessage(text="您的預約已成功取消。期待您的下次光臨！")
+                    )
+                else:
+                    line_bot_api.reply_message(
+                        event.reply_token,
+                        TextSendMessage(text="您目前沒有完整的預約信息。如需預約，請輸入「預約」。")
+                    )
+            else:
+                line_bot_api.reply_message(
+                    event.reply_token,
+                    TextSendMessage(text="您目前沒有預約。如需預約，請輸入「預約」。")
+                )
+        
+        # 處理查詢預約的請求
+        elif text == "查詢預約" or text == "我的預約":
+            if user_id in bookings and 'date' in bookings[user_id] and 'time' in bookings[user_id]:
+                booking_info = bookings[user_id]
+                manicurist_name = booking_info.get('manicurist_name', '未指定')
+                manicurist_id = booking_info.get('manicurist_id', '未指定')
+                title = "闆娘" if manicurist_id == '1' else manicurists.get(manicurist_id, {}).get('title', '')
+                
+                confirmation_message = (
+                    f"🔍 您的預約信息如下:\n\n"
+                    f"✨ 美甲師: {manicurist_name} {title}\n"
+                    f"💅 服務: {booking_info.get('category', '')} - {booking_info.get('service', '未指定')}\n"
+                    f"📅 日期: {booking_info['date']}\n"
+                    f"🕒 時間: {booking_info['time']}\n\n"
+                    f"如需變更，請輸入「取消預約」後重新預約。"
+                )
+                
+                line_bot_api.reply_message(
+                    event.reply_token,
+                    TextSendMessage(text=confirmation_message)
+                )
+            else:
+                line_bot_api.reply_message(
+                    event.reply_token,
+                    TextSendMessage(text="您目前沒有預約。如需預約，請輸入「預約」。")
+                )
+        
+        # 處理其他文字消息
+        else:
+            line_bot_api.reply_message(
+                event.reply_token,
+                TextSendMessage(text="您好！如需預約美甲服務，請輸入「預約」。\n如需查詢預約，請輸入「查詢預約」。\n如需取消預約，請輸入「取消預約」。")
+            )
+    
+    except Exception as e:
+        logger.error(f"處理文字消息時發生錯誤: {str(e)}")
+        try:
+            line_bot_api.reply_message(
+                event.reply_token,
+                TextSendMessage(text="很抱歉，處理您的訊息時發生錯誤，請稍後再試。")
+            )
+        except Exception as inner_e:
+            logger.error(f"回覆錯誤訊息時發生異常: {str(inner_e)}")
+
+# 添加定時任務功能，用於發送預約提醒
+def send_appointment_reminder():
+    """
+    檢查即將到來的預約並發送提醒
+    此函數應該由定時任務調用，例如每小時執行一次
+    """
+    if not GOOGLE_CALENDAR_AVAILABLE or calendar_service is None:
+        logger.error("Google Calendar API 不可用，無法檢查即將到來的預約")
+        return
+    
+    try:
+        now = datetime.now()
+        tomorrow = now + timedelta(days=1)
+        start_time = now.isoformat() + "Z"
+        end_time = tomorrow.isoformat() + "Z"
+        
+        calendar_id = os.environ.get('GOOGLE_CALENDAR_ID', 'primary')
+        
+        events_result = calendar_service.events().list(
+            calendarId=calendar_id,
+            timeMin=start_time,
+            timeMax=end_time,
+            singleEvents=True,
+            orderBy='startTime'
+        ).execute()
+        
+        events = events_result.get('items', [])
+        
+        for event in events:
+            try:
+                # 從事件描述中提取用戶ID
+                description = event.get('description', '')
+                user_id_match = None
+                for line in description.split('\n'):
+                    if line.startswith('客戶 ID:'):
+                        user_id_match = line.replace('客戶 ID:', '').strip()
+                        break
+                
+                if not user_id_match:
+                    continue
+                
+                # 獲取事件開始時間
+                start_time = event['start'].get('dateTime')
+                if not start_time:
+                    continue
+                
+                # 解析事件時間
+                event_time = datetime.fromisoformat(start_time.replace('Z', '+00:00'))
+                
+                # 計算事件距離現在的時間
+                time_diff = event_time - now
+                hours_remaining = time_diff.total_seconds() / 3600
+                
+                # 如果事件在2小時內，發送提醒
+                if 0 < hours_remaining <= 2:
+                    service_name = event.get('summary', '美甲服務')
+                    event_time_str = event_time.strftime('%Y-%m-%d %H:%M')
+                    
+                    reminder_message = (
+                        f"⏰ 預約提醒 ⏰\n\n"
+                        f"您的{service_name}預約將在約 {int(hours_remaining)} 小時後開始。\n"
+                        f"預約時間: {event_time_str}\n\n"
+                        f"期待為您提供專業的美甲服務！"
+                    )
+                    
+                    try:
+                        line_bot_api.push_message(
+                            user_id_match,
+                            TextSendMessage(text=reminder_message)
+                        )
+                        logger.info(f"已發送預約提醒給用戶 {user_id_match}, 預約時間: {event_time_str}")
+                    except Exception as e:
+                        logger.error(f"發送提醒給用戶 {user_id_match} 時出錯: {str(e)}")
+            
+            except Exception as e:
+                logger.error(f"處理事件提醒時出錯: {str(e)}")
+    
+    except Exception as e:
+        logger.error(f"檢查即將到來的預約時出錯: {str(e)}")
+
 # 其他函數（保持不變）
 # 添加日曆事件
 def add_event_to_calendar(user_id, booking_data):
@@ -679,6 +908,12 @@ if __name__ == "__main__":
         
         if GOOGLE_CALENDAR_AVAILABLE:
             logger.info("Google日曆API已成功初始化並可用")
+            # 在啟動時執行一次提醒檢查
+            try:
+                send_appointment_reminder()
+                logger.info("已執行預約提醒檢查")
+            except Exception as e:
+                logger.error(f"執行預約提醒檢查時出錯: {str(e)}")
         else:
             logger.error("Google日曆API未初始化或不可用，預約系統將無法檢查行事曆")
         
