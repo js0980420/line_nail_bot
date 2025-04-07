@@ -10,7 +10,7 @@ from linebot.models import (
     TemplateSendMessage, ButtonsTemplate, PostbackEvent,
     PostbackTemplateAction, DatetimePickerTemplateAction,
     CarouselTemplate, CarouselColumn, ImageSendMessage,
-    LocationSendMessage
+    LocationSendMessage, FollowEvent
 )
 import json
 import requests
@@ -948,6 +948,87 @@ def delete_event_from_calendar(date_str, time_str):
     except Exception as e:
         logger.error(f"刪除Google日曆事件失敗: {str(e)}")
         return False
+
+# 處理好友加入事件
+@handler.add(FollowEvent)
+def handle_follow(event):
+    try:
+        user_id = event.source.user_id
+        logger.info(f"新用戶加入: {user_id}")
+        
+        # 發送歡迎訊息和服務選項
+        welcome_message = (
+            "👋 歡迎加入美甲預約系統！\n\n"
+            "我們提供以下服務：\n"
+            "💅 預約 - 立即預約美甲服務\n"
+            "🔍 查詢預約 - 查看您的預約資訊\n"
+            "❌ 取消預約 - 取消現有預約\n\n"
+            "請選擇您需要的服務！"
+        )
+        
+        # 顯示服務選項
+        carousel_template = CarouselTemplate(
+            columns=[
+                CarouselColumn(
+                    thumbnail_image_url="https://example.com/nail_art1.jpg",
+                    title="基礎美甲服務",
+                    text="選擇您想要的基礎美甲服務",
+                    actions=[
+                        PostbackTemplateAction(
+                            label="基礎凝膠",
+                            data="service_基礎凝膠"
+                        ),
+                        PostbackTemplateAction(
+                            label="基礎保養",
+                            data="service_基礎保養"
+                        ),
+                        PostbackTemplateAction(
+                            label="卸甲服務",
+                            data="service_卸甲服務"
+                        )
+                    ]
+                ),
+                CarouselColumn(
+                    thumbnail_image_url="https://example.com/nail_art2.jpg",
+                    title="進階美甲服務",
+                    text="選擇您想要的進階美甲服務",
+                    actions=[
+                        PostbackTemplateAction(
+                            label="法式凝膠",
+                            data="service_法式凝膠"
+                        ),
+                        PostbackTemplateAction(
+                            label="漸層凝膠",
+                            data="service_漸層凝膠"
+                        ),
+                        PostbackTemplateAction(
+                            label="鑽飾設計",
+                            data="service_鑽飾設計"
+                        )
+                    ]
+                )
+            ]
+        )
+        
+        template_message = TemplateSendMessage(
+            alt_text='美甲服務選擇',
+            template=carousel_template
+        )
+        
+        # 先發送歡迎訊息
+        line_bot_api.reply_message(
+            event.reply_token,
+            TextSendMessage(text=welcome_message)
+        )
+        
+        # 然後發送服務選項
+        line_bot_api.push_message(
+            user_id,
+            template_message
+        )
+        
+    except Exception as e:
+        logger.error(f"處理好友加入事件時發生錯誤: {str(e)}")
 
 if __name__ == "__main__":
     logger.info("美甲預約機器人開始啟動...")
