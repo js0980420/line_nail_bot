@@ -242,379 +242,6 @@ def check_google_calendar(date_str, time_str):
         logger.error(f"檢查Google行事曆時出錯: {str(e)}")
         raise Exception(f"行事曆查詢失敗，請聯絡工程師修改: {str(e)}")
 
-# 處理 Postback 事件（保持不變）
-@handler.add(PostbackEvent)
-def handle_postback(event):
-    try:
-        data = event.postback.data
-        user_id = event.source.user_id
-        logger.info(f"收到來自用戶 {user_id} 的 postback: {data}")
-        
-        # 處理服務項目選擇
-        if data.startswith("service_"):
-            try:
-                service = data.replace("service_", "")
-                
-                if user_id not in bookings:
-                    bookings[user_id] = {}
-                
-                bookings[user_id]['category'] = "美甲服務"
-                bookings[user_id]['service'] = service
-                
-                date_picker = DatetimePickerTemplateAction(
-                    label='選擇日期',
-                    data='action=date_picker',
-                    mode='date',
-                    initial=datetime.now().strftime('%Y-%m-%d'),
-                    min=datetime.now().strftime('%Y-%m-%d'),
-                    max=(datetime.now() + timedelta(days=30)).strftime('%Y-%m-%d')
-                )
-                
-                buttons_template = ButtonsTemplate(
-                    title='選擇預約日期',
-                    text=f'您選擇了: 美甲服務 - {service}\n請選擇預約日期',
-                    actions=[date_picker]
-                )
-                
-                template_message = TemplateSendMessage(
-                    alt_text='日期選擇',
-                    template=buttons_template
-                )
-                
-                line_bot_api.reply_message(event.reply_token, template_message)
-            except Exception as e:
-                logger.error(f"處理服務選擇時出錯: {str(e)}")
-                line_bot_api.reply_message(
-                    event.reply_token,
-                    TextSendMessage(text="抱歉，處理您的服務選擇時出現問題，請重新開始預約流程。")
-                )
-        
-        # 處理日期選擇
-        elif data == 'action=date_picker':
-            selected_date = event.postback.params['date']
-            
-            bookings[user_id]['date'] = selected_date
-            
-            available_times = []
-            for hour in range(business_hours['start'], business_hours['end']):
-                for minute in [0, 30]:
-                    time_str = f"{hour:02d}:{minute:02d}"
-                    available_times.append(time_str)
-            
-            morning_times = [t for t in available_times if int(t.split(':')[0]) < 12]
-            afternoon_times = [t for t in available_times if 12 <= int(t.split(':')[0]) < 17]
-            evening_times = [t for t in available_times if int(t.split(':')[0]) >= 17]
-            
-            buttons_template = ButtonsTemplate(
-                title='選擇時段',
-                text=f'預約日期: {selected_date}\n請選擇大致時段',
-                actions=[
-                    PostbackTemplateAction(
-                        label='上午 (10:00-12:00)',
-                        data=f"timeperiod_morning_{selected_date}"
-                    ),
-                    PostbackTemplateAction(
-                        label='下午 (12:00-17:00)',
-                        data=f"timeperiod_afternoon_{selected_date}"
-                    ),
-                    PostbackTemplateAction(
-                        label='晚上 (17:00-20:00)',
-                        data=f"timeperiod_evening_{selected_date}"
-                    )
-                ]
-            )
-            
-            template_message = TemplateSendMessage(
-                alt_text='時段選擇',
-                template=buttons_template
-            )
-            
-            line_bot_api.reply_message(event.reply_token, template_message)
-        
-        # 處理時段選擇
-        elif data.startswith("timeperiod_"):
-            parts = data.split("_")
-            period = parts[1]
-            selected_date = parts[2]
-            
-            available_times = []
-            for hour in range(business_hours['start'], business_hours['end']):
-                for minute in [0, 30]:
-                    time_str = f"{hour:02d}:{minute:02d}"
-                    available_times.append(time_str)
-            
-            if period == "morning":
-                display_times = [t for t in available_times if int(t.split(':')[0]) < 12]
-                period_text = "上午"
-            elif period == "afternoon":
-                display_times = [t for t in available_times if 12 <= int(t.split(':')[0]) < 17]
-                period_text = "下午"
-            else:
-                display_times = [t for t in available_times if int(t.split(':')[0]) >= 17]
-                period_text = "晚上"
-            
-            display_times = display_times[:4]
-            
-            buttons_template = ButtonsTemplate(
-                title=f'選擇{period_text}預約時間',
-                text=f'預約日期: {selected_date}\n請選擇具體時間',
-                actions=[
-                    PostbackTemplateAction(
-                        label=time_str,
-                        data=f"time_{time_str}_{selected_date}"
-                    ) for time_str in display_times
-                ]
-            )
-            
-            template_message = TemplateSendMessage(
-                alt_text='時間選擇',
-                template=buttons_template
-            )
-            
-            line_bot_api.reply_message(event.reply_token, template_message)
-        
-        # 處理時間選擇
-        elif data.startswith("time_"):
-            parts = data.split("_")
-            selected_time = parts[1]
-            selected_date = parts[2] if len(parts) > 2 else bookings[user_id].get('date')
-            
-            if selected_date:
-                bookings[user_id]['date'] = selected_date
-            else:
-                line_bot_api.reply_message(
-                    event.reply_token,
-                    TextSendMessage(text="發生錯誤，請重新選擇預約日期。")
-                )
-                return
-            
-            bookings[user_id]['time'] = selected_time
-            
-            datetime_str = f"{selected_date} {selected_time}"
-            
-            # 使用Google行事曆檢查是否有衝突
-            try:
-                is_busy = check_google_calendar(selected_date, selected_time)
-                if is_busy:
-                    line_bot_api.reply_message(
-                        event.reply_token,
-                        TextSendMessage(text=f"❌ 很抱歉，美甲師在 {datetime_str} 這個時間已有行程，請選擇其他時間預約。")
-                    )
-                    return
-            except Exception as e:
-                logger.error(f"行事曆檢查失敗: {str(e)}")
-                line_bot_api.reply_message(
-                    event.reply_token,
-                    TextSendMessage(text="行事曆查詢失敗，請聯絡工程師修改")
-                )
-                return
-            
-            # 檢查哪些美甲師在該時間可用
-            available_manicurists = []
-            for manicurist_id, manicurist in manicurists.items():
-                if datetime_str not in manicurist['calendar']:
-                    available_manicurists.append(manicurist_id)
-            
-            if not available_manicurists:
-                line_bot_api.reply_message(
-                    event.reply_token,
-                    TextSendMessage(text=f"❌ 很抱歉，{datetime_str} 這個時間所有美甲師都有預約了。\n\n請選擇其他時間或日期預約。")
-                )
-                return
-            
-            send_available_manicurists(event.reply_token, available_manicurists, datetime_str)
-        
-        # 處理美甲師選擇
-        elif data.startswith("select_manicurist_"):
-            try:
-                parts = data.split("_")
-                manicurist_id = parts[2]
-                
-                if manicurist_id not in manicurists:
-                    logger.error(f"無效的美甲師ID: {manicurist_id}")
-                    line_bot_api.reply_message(
-                        event.reply_token,
-                        TextSendMessage(text="抱歉，您選擇的美甲師不存在，請重新開始預約流程。")
-                    )
-                    return
-                
-                date_time = '_'.join(parts[3:]) if len(parts) > 3 else ""
-                
-                if date_time and " " in date_time:
-                    date_str, time_str = date_time.split(" ", 1)
-                    try:
-                        is_busy = check_google_calendar(date_str, time_str)
-                        if is_busy:
-                            line_bot_api.reply_message(
-                                event.reply_token,
-                                TextSendMessage(text=f"❌ 很抱歉，美甲師在 {date_time} 這個時間已有行程，請選擇其他時間預約。")
-                            )
-                            return
-                    except Exception as e:
-                        logger.error(f"行事曆檢查失敗: {str(e)}")
-                        line_bot_api.reply_message(
-                            event.reply_token,
-                            TextSendMessage(text="行事曆查詢失敗，請聯絡工程師修改")
-                        )
-                        return
-                else:
-                    date_str = bookings[user_id].get('date')
-                    time_str = bookings[user_id].get('time')
-                    if date_str and time_str:
-                        try:
-                            is_busy = check_google_calendar(date_str, time_str)
-                            if is_busy:
-                                line_bot_api.reply_message(
-                                    event.reply_token,
-                                    TextSendMessage(text=f"❌ 很抱歉，美甲師在 {date_str} {time_str} 這個時間已有行程，請選擇其他時間預約。")
-                                )
-                                return
-                        except Exception as e:
-                            logger.error(f"行事曆檢查失敗: {str(e)}")
-                            line_bot_api.reply_message(
-                                event.reply_token,
-                                TextSendMessage(text="行事曆查詢失敗，請聯絡工程師修改")
-                            )
-                            return
-                        date_time = f"{date_str} {time_str}"
-                    else:
-                        line_bot_api.reply_message(
-                            event.reply_token,
-                            TextSendMessage(text="抱歉，無法確定您要預約的時間。請重新開始預約流程。")
-                        )
-                        return
-                
-                if date_time and date_time in manicurists[manicurist_id]['calendar']:
-                    line_bot_api.reply_message(
-                        event.reply_token,
-                        TextSendMessage(text=f"❌ 很抱歉，該美甲師剛剛被預約了這個時段，請重新選擇時間或其他美甲師。")
-                    )
-                    return
-                
-                bookings[user_id]['manicurist_id'] = manicurist_id
-                bookings[user_id]['manicurist_name'] = manicurists[manicurist_id]['name']
-                
-                selected_date = bookings[user_id]['date']
-                selected_time = bookings[user_id]['time']
-                datetime_str = f"{selected_date} {selected_time}"
-                manicurists[manicurist_id]['calendar'][datetime_str] = user_id
-                
-                title = "闆娘" if manicurist_id == '1' else manicurists[manicurist_id]['title']
-                
-                booking_info = bookings[user_id]
-                
-                calendar_result = add_event_to_calendar(user_id, booking_info)
-                if calendar_result:
-                    logger.info(f"已將預約添加到Google日曆: {booking_info}")
-                else:
-                    logger.warning(f"無法將預約添加到Google日曆，但預約仍然有效: {booking_info}")
-                
-                confirmation_message = (
-                    f"🎊 您的預約已確認! 🎊\n\n"
-                    f"✨ 美甲師: {booking_info['manicurist_name']} {title}\n"
-                    f"💅 服務: {booking_info.get('category', '')} - {booking_info['service']}\n"
-                    f"📅 日期: {booking_info['date']}\n"
-                    f"🕒 時間: {booking_info['time']}\n\n"
-                    f"如需變更，請輸入「取消預約」後重新預約。\n"
-                    f"期待為您提供專業的美甲服務！"
-                )
-                
-                line_bot_api.reply_message(
-                    event.reply_token,
-                    TextSendMessage(text=confirmation_message)
-                )
-            except Exception as e:
-                logger.error(f"處理美甲師選擇時出錯: {str(e)}")
-                line_bot_api.reply_message(
-                    event.reply_token,
-                    TextSendMessage(text="抱歉，處理您的美甲師選擇時出現問題，請重新開始預約流程。")
-                )
-        else:
-            logger.warning(f"收到未知的 postback 數據: {data}")
-            line_bot_api.reply_message(
-                event.reply_token,
-                TextSendMessage(text="抱歉，無法處理您的請求。請重新開始預約流程。")
-            )
-
-    except Exception as e:
-        logger.error(f"處理 postback 時發生錯誤: {str(e)}")
-        try:
-            line_bot_api.reply_message(
-                event.reply_token,
-                TextSendMessage(text="很抱歉，處理您的選擇時發生錯誤，請重新開始。")
-            )
-        except Exception as inner_e:
-            logger.error(f"傳送錯誤通知時發生錯誤: {str(inner_e)}")
-
-# 添加發送可用美甲師列表的函數
-def send_available_manicurists(reply_token, available_manicurists, datetime_str):
-    """
-    發送可用美甲師列表給用戶
-    
-    Args:
-        reply_token: LINE回覆令牌
-        available_manicurists: 可用美甲師ID列表
-        datetime_str: 預約日期時間字符串
-    """
-    try:
-        columns = []
-        
-        for manicurist_id in available_manicurists:
-            if manicurist_id not in manicurists:
-                continue
-                
-            manicurist = manicurists[manicurist_id]
-            
-            # 設置美甲師圖片，如果沒有則使用預設圖片
-            image_url = manicurist.get('image_url', 'https://example.com/default_manicurist.jpg')
-            
-            # 設置美甲師標題
-            title = f"{manicurist['name']} {manicurist.get('title', '')}"
-            if len(title) > 40:  # LINE限制標題長度
-                title = title[:37] + "..."
-                
-            # 設置美甲師簡介
-            text = manicurist.get('bio', '專業美甲師')
-            if len(text) > 60:  # LINE限制文字長度
-                text = text[:57] + "..."
-                
-            columns.append(
-                CarouselColumn(
-                    thumbnail_image_url=image_url,
-                    title=title,
-                    text=text,
-                    actions=[
-                        PostbackTemplateAction(
-                            label=f"選擇 {manicurist['name']}",
-                            data=f"select_manicurist_{manicurist_id}_{datetime_str}"
-                        )
-                    ]
-                )
-            )
-        
-        if not columns:
-            line_bot_api.reply_message(
-                reply_token,
-                TextSendMessage(text="抱歉，目前沒有可用的美甲師。請選擇其他時間。")
-            )
-            return
-            
-        carousel_template = CarouselTemplate(columns=columns)
-        
-        template_message = TemplateSendMessage(
-            alt_text='選擇美甲師',
-            template=carousel_template
-        )
-        
-        line_bot_api.reply_message(reply_token, template_message)
-        
-    except Exception as e:
-        logger.error(f"發送美甲師列表時出錯: {str(e)}")
-        line_bot_api.reply_message(
-            reply_token,
-            TextSendMessage(text="抱歉，獲取美甲師列表時出現錯誤，請稍後再試。")
-        )
-
 # 處理文字消息
 @handler.add(MessageEvent, message=TextMessage)
 def handle_text_message(event):
@@ -623,8 +250,18 @@ def handle_text_message(event):
         user_id = event.source.user_id
         logger.info(f"收到來自用戶 {user_id} 的文字消息: {text}")
         
+        # 檢查是否正在處理中
+        if user_id in bookings and 'processing' in bookings[user_id] and bookings[user_id]['processing']:
+            logger.info(f"用戶 {user_id} 的請求正在處理中，忽略重複請求")
+            return
+        
         # 處理預約相關的文字命令
         if text == "預約" or text == "我要預約" or text == "美甲預約":
+            # 設置處理中標記
+            if user_id not in bookings:
+                bookings[user_id] = {}
+            bookings[user_id]['processing'] = True
+            
             # 顯示服務選項
             carousel_template = CarouselTemplate(
                 columns=[
@@ -675,53 +312,63 @@ def handle_text_message(event):
             )
             
             line_bot_api.reply_message(event.reply_token, template_message)
+            
+            # 重置處理中標記
+            bookings[user_id]['processing'] = False
         
         # 處理取消預約的請求
         elif text == "取消預約" or text == "我要取消預約":
-            if user_id in bookings:
+            # 設置處理中標記
+            if user_id not in bookings:
+                bookings[user_id] = {}
+            bookings[user_id]['processing'] = True
+            
+            if user_id in bookings and 'date' in bookings[user_id] and 'time' in bookings[user_id]:
                 booking_info = bookings[user_id]
-                if 'date' in booking_info and 'time' in booking_info:
-                    date_str = booking_info['date']
-                    time_str = booking_info['time']
-                    
-                    # 嘗試從Google日曆刪除事件
-                    if GOOGLE_CALENDAR_AVAILABLE:
-                        try:
-                            delete_result = delete_event_from_calendar(date_str, time_str)
-                            if delete_result:
-                                logger.info(f"已從Google日曆刪除預約: {date_str} {time_str}")
-                            else:
-                                logger.warning(f"無法從Google日曆刪除預約: {date_str} {time_str}")
-                        except Exception as e:
-                            logger.error(f"刪除Google日曆事件時出錯: {str(e)}")
-                    
-                    # 從美甲師的日曆中移除預約
-                    if 'manicurist_id' in booking_info:
-                        manicurist_id = booking_info['manicurist_id']
-                        datetime_str = f"{date_str} {time_str}"
-                        if manicurist_id in manicurists and datetime_str in manicurists[manicurist_id]['calendar']:
-                            del manicurists[manicurist_id]['calendar'][datetime_str]
-                    
-                    # 清除預約信息
-                    del bookings[user_id]
-                    
-                    line_bot_api.reply_message(
-                        event.reply_token,
-                        TextSendMessage(text="您的預約已成功取消。期待您的下次光臨！")
-                    )
-                else:
-                    line_bot_api.reply_message(
-                        event.reply_token,
-                        TextSendMessage(text="您目前沒有完整的預約信息。如需預約，請輸入「預約」。")
-                    )
+                date_str = booking_info['date']
+                time_str = booking_info['time']
+                
+                # 嘗試從Google日曆刪除事件
+                if GOOGLE_CALENDAR_AVAILABLE:
+                    try:
+                        delete_result = delete_event_from_calendar(date_str, time_str)
+                        if delete_result:
+                            logger.info(f"已從Google日曆刪除預約: {date_str} {time_str}")
+                        else:
+                            logger.warning(f"無法從Google日曆刪除預約: {date_str} {time_str}")
+                    except Exception as e:
+                        logger.error(f"刪除Google日曆事件時出錯: {str(e)}")
+                
+                # 從美甲師的日曆中移除預約
+                if 'manicurist_id' in booking_info:
+                    manicurist_id = booking_info['manicurist_id']
+                    datetime_str = f"{date_str} {time_str}"
+                    if manicurist_id in manicurists and datetime_str in manicurists[manicurist_id]['calendar']:
+                        del manicurists[manicurist_id]['calendar'][datetime_str]
+                
+                # 清除預約信息
+                del bookings[user_id]
+                
+                line_bot_api.reply_message(
+                    event.reply_token,
+                    TextSendMessage(text="您的預約已成功取消。期待您的下次光臨！")
+                )
             else:
                 line_bot_api.reply_message(
                     event.reply_token,
-                    TextSendMessage(text="您目前沒有預約。如需預約，請輸入「預約」。")
+                    TextSendMessage(text="您目前沒有完整的預約信息。如需預約，請輸入「預約」。")
                 )
+            
+            # 重置處理中標記
+            bookings[user_id]['processing'] = False
         
         # 處理查詢預約的請求
         elif text == "查詢預約" or text == "我的預約":
+            # 設置處理中標記
+            if user_id not in bookings:
+                bookings[user_id] = {}
+            bookings[user_id]['processing'] = True
+            
             if user_id in bookings and 'date' in bookings[user_id] and 'time' in bookings[user_id]:
                 booking_info = bookings[user_id]
                 manicurist_name = booking_info.get('manicurist_name', '未指定')
@@ -746,6 +393,9 @@ def handle_text_message(event):
                     event.reply_token,
                     TextSendMessage(text="您目前沒有預約。如需預約，請輸入「預約」。")
                 )
+            
+            # 重置處理中標記
+            bookings[user_id]['processing'] = False
         
         # 處理其他文字消息
         else:
